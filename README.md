@@ -34,7 +34,7 @@ Voraussetzung ist ein Konto mit Basiswährung EUR.
 | Verkäufe von Aktien | Gewinn oder Verlust nach FIFO je Depot und Wertpapier → Anlage KAP Zeilen 19, 20, 23 (deutsche Aktien: Zeile 18) |
 | Dividenden ausländischer Aktien, Zinsen | Anlage KAP Zeile 19 |
 | Ausländische Quellensteuer auf Dividenden | Anlage KAP Zeile 41, höchstens 15 % der Bruttodividende |
-| Verkäufe und Ausschüttungen von Fonds und ETFs | Anlage KAP-INV, Zeile je nach Fondsart |
+| Verkäufe und Ausschüttungen von Fonds und ETFs | Anlage KAP-INV, Zeile je nach Fondsart. Beim Verkauf sind die Vorabpauschalen aus der Haltezeit abgezogen (Zeile 53 des Vordrucks) |
 | Vorabpauschale für Fonds und ETFs | Anlage KAP-INV Zeilen 9 bis 13, gerechnet wie auf Seite 2 des Vordrucks (Zeilen 33 bis 45) |
 | Aktiensplits | Anschaffungskosten werden auf die neue Stückzahl verteilt |
 
@@ -47,16 +47,18 @@ Die Zeilennummern sind für das Steuerjahr 2025 hinterlegt (`js/core/forms.js`).
 - **Gewinn und Verlust:** Je Verkauf ein Ergebnis. Ab null zählt es als Gewinn (Zeile 20), darunter als Verlust (Zeile 23).
 - **Rundung:** Jeder Vorgang wird in Euro auf ganze Cent gerundet, gerechnet wird danach nur mit ganzen Cent.
 - **Fonds:** Beträge stehen in voller Höhe im Bericht. Die Teilfreistellung zieht das Finanzamt ab.
-- **Vorabpauschale:** Sie gilt am ersten Werktag des Folgejahres als zugeflossen. Im Bericht für 2025 steht deshalb die Vorabpauschale für 2024. Gerechnet wird je Anteil in Euro und Cent, wie im Vordruck. Der Prozentsatz für den Basisertrag ist für 2023 (1,785 %) und 2024 (1,603 %) hinterlegt.
-- **Fondspreise:** Der Vordruck verlangt je Fonds den Preis eines Anteils zu Beginn und am Ende des Jahres. Der Export enthält nur Kurse zum Jahresende. Den Preis zu Jahresbeginn trägst du im Bericht ein. Fehlt die Eingabe, nimmt der Bericht den Schlusskurs des Vorjahres und weist das als Prüfpunkt aus.
+- **Vorabpauschale:** Sie gilt am ersten Werktag des Folgejahres als zugeflossen. Im Bericht für 2025 steht deshalb die Vorabpauschale für 2024. Gerechnet wird je Anteil in Euro und Cent, wie im Vordruck.
+- **Prozentsatz für den Basisertrag:** Hinterlegt für 2018 bis 2024: 0,609 %, 0,364 %, 0,049 %, 2021 und 2022 keine Vorabpauschale (Basiszins negativ), 1,785 %, 1,603 %. Die Werte ab 2019 stehen in Zeile 34 des Vordrucks des jeweiligen Folgejahres. Der Wert für 2018 folgt aus dem Basiszins von 0,87 % laut BMF-Schreiben vom 4.1.2018 und ist nicht am Vordruck abgeglichen.
+- **Abzug beim Verkauf von Fonds:** Vom Ergebnis eines Verkaufs zieht der Bericht die Vorabpauschalen ab, die während der Haltezeit angefallen sind (§ 19 Abs. 1 InvStG), je verkauftem Anteil nach FIFO und für jedes Jahr, an dessen Ende der Anteil noch im Depot lag. Abgezogen wird, was der Bericht selbst für diese Jahre rechnet. Maßgeblich sind die Beträge aus deinen früheren Steuererklärungen. Fehlen Preise für ein Jahr, wird dieses Jahr nicht abgezogen und als Prüfpunkt gemeldet.
+- **Fondspreise:** Der Vordruck verlangt je Fonds und Jahr den Preis eines Anteils zu Beginn und am Ende des Jahres. Der Export enthält nur Kurse zum Jahresende. Den Preis zu Jahresbeginn trägst du im Bericht ein. Fehlt die Eingabe, nimmt der Bericht den Schlusskurs des Vorjahres und weist das als Prüfpunkt aus.
 
 ## Was nicht gerechnet wird
 
 Der Grundsatz: Was nicht sicher berechnet werden kann, steht als **offener Punkt** im Bericht und in keiner Summe. Solange offene Punkte bestehen, meldet der Bericht „Noch nicht vollständig“.
 
 - Optionen, Futures, CFDs, Anleihen, Zertifikate, Kryptowerte
-- Abzug früherer Vorabpauschalen beim Verkauf von Fonds
 - Vorabpauschale für Jahre ohne hinterlegten Prozentsatz und für Fonds mit einer Kapitalmaßnahme im Jahr
+- Abzug früherer Vorabpauschalen beim Verkauf, wenn es bei dem Fonds vorher eine Kapitalmaßnahme gab (zum Beispiel einen Split)
 - Leerverkäufe
 - Kapitalmaßnahmen außer Aktiensplits (Abspaltungen, Fusionen, Aktiendividenden, Bezugsrechte)
 - Dividenden deutscher Aktien (dort wird deutsche Kapitalertragsteuer einbehalten)
@@ -102,6 +104,5 @@ GNU Affero General Public License v3.0 (AGPL-3.0). Der vollständige Text steht 
 
 1. Mit einem echten Export prüfen und mit dem Steuerbericht vergleichen, den IBKR selbst anbietet.
 2. Rechenlogik von einem Steuerberater durchsehen lassen.
-3. Frühere Vorabpauschalen beim Verkauf von Fonds abziehen.
-4. Optionen (Stillhalterprämien, Termingeschäfte).
-5. Weitere Broker.
+3. Optionen (Stillhalterprämien, Termingeschäfte).
+4. Weitere Broker.
