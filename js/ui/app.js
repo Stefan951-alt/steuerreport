@@ -286,17 +286,18 @@
     renderResult();
   }
 
-  // Die Vorabpauschale braucht je Fonds zwei Preise, die der Export nicht immer enthält. Hier lassen sie sich eintragen.
+  // Die Vorabpauschale braucht je Fonds und Jahr zwei Preise, die der Export nicht immer enthält. Hier lassen sie sich eintragen.
   function pricesView(report) {
-    const v = report.vorab;
-    const byKey = new Map();
-    v.funds.forEach(function (f) {
-      const row = byKey.get(f.key) || { fund: f, cents: 0, open: false };
-      if (f.status === 'berechnet') row.cents += f.cents;
-      else row.open = true;
-      byKey.set(f.key, row);
+    const byRow = new Map();
+    report.vorab.funds.forEach(function (f) {
+      const id = f.key + '|' + f.year;
+      const row = byRow.get(id) || { fund: f, cents: null, abzug: null, open: '' };
+      if (f.status === 'berechnet') row.cents = (row.cents || 0) + f.cents;
+      else if (f.status !== 'bereit') row.open = row.open || f.status;
+      if (f.abzug !== null) row.abzug = (row.abzug || 0) + f.abzug;
+      byRow.set(id, row);
     });
-    if (!byKey.size) return null;
+    if (!byRow.size) return null;
 
     const field = function (fund, which, label) {
       const fromExport = which === 'beginn' ? fund.exportBeginn : fund.exportEnde;
@@ -307,28 +308,33 @@
       return h('td', null, [
         h('input', {
           type: 'text', inputmode: 'decimal', class: 'price' + (bad ? ' bad' : ''), value: typed,
-          placeholder: fromExport !== null ? M.fmtCents(fromExport) : '0,00', 'aria-label': label + ' von ' + fund.security,
-          onchange: ev => setPrice(fund.key, v.year, which, ev.target.value.trim())
+          placeholder: fromExport !== null ? M.fmtCents(fromExport) : '0,00', 'aria-label': label + ' ' + fund.year + ' von ' + fund.security,
+          onchange: ev => setPrice(fund.key, fund.year, which, ev.target.value.trim())
         }),
         h('span', { class: 'desc', text: hint })
       ]);
     };
-    const statusText = { prozentsatz: 'Prozentsatz fehlt', bestand: 'Von Hand zu rechnen', preise: 'Preis fehlt' };
-    const body = Array.from(byKey.values()).map(function (row) {
+    const statusText = { bestand: 'Von Hand zu rechnen', preise: 'Preis fehlt' };
+    const body = Array.from(byRow.values()).map(function (row) {
+      const result = [];
+      if (row.open) result.push(statusText[row.open] || 'Offen');
+      else if (row.cents !== null) result.push('Vorabpauschale ' + M.fmtCents(row.cents) + ' €');
+      if (row.abzug !== null) result.push('Abzug beim Verkauf ' + M.fmtCents(row.abzug) + ' €');
       return h('tr', { class: row.open ? 'todo' : null }, [
         h('td', null, [h('strong', { text: row.fund.security })]),
-        field(row.fund, 'beginn', 'Preis zu Jahresbeginn ' + v.year),
-        field(row.fund, 'ende', 'Letzter Preis ' + v.year),
-        h('td', { class: 'num', text: row.open ? statusText[row.fund.status] || 'Offen' : M.fmtCents(row.cents) + ' €' })
+        h('td', { text: String(row.fund.year) }),
+        field(row.fund, 'beginn', 'Preis zu Jahresbeginn'),
+        field(row.fund, 'ende', 'Letzter Preis'),
+        h('td', { class: 'num', text: result.join(' · ') })
       ]);
     });
 
     return h('section', { class: 'card', id: 'fondspreise' }, [
-      h('h2', null, ['Fondspreise für die Vorabpauschale ', h('span', { class: 'year', text: String(v.year) })]),
-      h('p', { class: 'section-note', text: 'Der Vordruck verlangt je Fonds den Preis eines Anteils zu Beginn und am Ende des Jahres ' + v.year + ', jeweils in Euro. Leere Felder nehmen den Wert aus dem Export, soweit er dort steht. Deine Eingaben werden in diesem Browser gespeichert.' }),
+      h('h2', { text: 'Fondspreise für die Vorabpauschale' }),
+      h('p', { class: 'section-note', text: 'Der Vordruck verlangt je Fonds den Preis eines Anteils zu Beginn und am Ende des Jahres, jeweils in Euro. Frühere Jahre stehen hier, wenn du Anteile verkauft hast: Die Vorabpauschalen aus der Haltezeit mindern den Gewinn. Leere Felder nehmen den Wert aus dem Export, soweit er dort steht. Deine Eingaben werden in diesem Browser gespeichert.' }),
       h('div', { class: 'scroll' }, [h('table', { class: 'securities' }, [
         h('thead', null, [h('tr', null, [
-          h('th', { text: 'Fonds' }), h('th', { text: 'Preis zu Jahresbeginn €' }), h('th', { text: 'Letzter Preis €' }), h('th', { class: 'num', text: 'Vorabpauschale' })
+          h('th', { text: 'Fonds' }), h('th', { text: 'Jahr' }), h('th', { text: 'Preis zu Jahresbeginn €' }), h('th', { text: 'Letzter Preis €' }), h('th', { class: 'num', text: 'Ergebnis' })
         ])]),
         h('tbody', null, body)
       ])])
