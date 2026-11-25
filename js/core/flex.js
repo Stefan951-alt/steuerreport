@@ -151,8 +151,13 @@
     rows.forEach(function (r, i) {
       const conid = attr(r, 'conid');
       if (!conid) return;
-      const entry = byConid.get(conid) || Object.assign(security(r), { position: 0 });
+      const entry = byConid.get(conid) || Object.assign(security(r), { position: 0, markPrice: 0, fx: null });
       entry.position += num(r, 'position', 'Abschnitt Open Positions, Zeile ' + (i + 1), true);
+      // Kurs am Stichtag in der Währung des Wertpapiers und Umrechnungskurs: Grundlage für die Vorabpauschale.
+      const mark = M.parseDec(r.getAttribute('markPrice'));
+      if (mark > 0) entry.markPrice = mark;
+      const fx = M.parseDec(r.getAttribute('fxRateToBase'));
+      if (fx > 0) entry.fx = fx;
       byConid.set(conid, entry);
     });
     return Array.from(byConid.values());
