@@ -104,7 +104,10 @@
       commission: num(e, 'ibCommission', ctx, false), commissionCurrency: attr(e, 'ibCommissionCurrency'),
       taxes: num(e, 'taxes', ctx, false), tradePrice: num(e, 'tradePrice', ctx, false),
       buySell: attr(e, 'buySell'), openClose: attr(e, 'openCloseIndicator'), notes: attr(e, 'notes'),
-      transactionType: attr(e, 'transactionType')
+      transactionType: attr(e, 'transactionType'),
+      // Nur bei Optionen gefüllt: Call oder Put, Basispreis, Kontraktgröße und Basiswert.
+      putCall: attr(e, 'putCall'), strike: num(e, 'strike', ctx, false),
+      multiplier: num(e, 'multiplier', ctx, false), underlyingConid: attr(e, 'underlyingConid')
     });
   }
 
