@@ -270,7 +270,7 @@
     });
     const incompleteSales = [];
     const oldFundLots = [];
-    let fundSaleCount = 0;
+    const fundSaleRefs = [];
 
     results.forEach(function (res) {
       res.realizations.forEach(function (r) {
@@ -291,7 +291,7 @@
           else (inland ? stock.lossesInland : stock.lossesAusland).push(item);
         } else {
           fundSales[res.group === 'fonds' ? res.type : 'offen'].push(item);
-          fundSaleCount++;
+          fundSaleRefs.push({ res: res, r: r, item: item });
           if (r.pieces.some(p => p.lotDate < '2018-01-01')) oldFundLots.push(item);
         }
       });
@@ -400,20 +400,12 @@
       if (reasons.length) withholdingChecks.push(Object.assign({}, base, { text: reasons.join(' '), cents: credit }));
     });
 
-    /* --- Vorabpauschale für das Vorjahr: gilt am ersten Werktag des Steuerjahres als zugeflossen (§ 18 Abs. 3 InvStG) --- */
+    /* --- Vorabpauschale: Grundlagen je Fonds und Kalenderjahr (§ 18 InvStG) --- */
 
     const vorabYear = year - 1;
     const vorabEnd = vorabYear + '-12-31';
-    const vorabStart = (vorabYear - 1) + '-12-31';
-    const prozent = K.forms.basisertragProzent(vorabYear);
     const vz = forms.kapinv.vorabRechnung;
-    const vorabLines = { offen: [] };
-    FUND_TYPES.forEach(function (t) {
-      vorabLines[t] = [];
-    });
     const vorabFunds = [];
-    const vorabOpen = [];
-    const vorabChecks = [];
 
     // Kurs je Anteil in Euro-Cent aus dem Abschnitt „Open Positions“ eines Auszugs, der genau an diesem Tag endet.
     const exportPrice = function (account, conid, isoDate) {
@@ -428,71 +420,104 @@
       return cents;
     };
 
-    results.forEach(function (res) {
-      if (res.group !== 'fonds' && res.group !== 'fonds_offen') return;
-      const atEnd = F.run(res.events.filter(e => e.date <= vorabEnd));
-      if (!atEnd.lots.length) return;
+    // Prozentsatz, Preise und Ausschüttungen eines Fonds für ein Kalenderjahr. „fehlt“ nennt den Grund, wenn sich damit nicht rechnen lässt.
+    const vorabCache = new Map();
+    const vorabBasis = function (res, n) {
+      const cacheKey = res.account + '|' + res.conid + '|' + n;
+      if (vorabCache.has(cacheKey)) return vorabCache.get(cacheKey);
+      const basis = { prozent: K.forms.basisertragProzent(n), fehlt: '', beginn: null, ende: null, ausschuettung: 0, estimated: false, fund: null };
+      vorabCache.set(cacheKey, basis);
+      if (basis.prozent === null) basis.fehlt = 'prozentsatz';
+      // Nach einem Split passen der Preis je Anteil zu Jahresbeginn und die Stückzahl am Jahresende nicht mehr zusammen.
+      else if (basis.prozent > 0 && res.events.some(e => e.kind === 'corporateAction' && e.date.slice(0, 4) === String(n))) basis.fehlt = 'kapitalmassnahme';
+      // Bei negativem Basiszins (Prozentsatz 0) gibt es für das Jahr keine Vorabpauschale, Preise sind dann nicht nötig.
+      if (basis.fehlt || basis.prozent === 0) return basis;
+
       const key = typeKey(res.sec);
-      const base = { date: '', security: secLabel(res.sec), art: 'Vorabpauschale ' + vorabYear };
-      const typed = (userPrices && userPrices[key] && userPrices[key][vorabYear]) || {};
-      const fromExport = { beginn: exportPrice(res.account, res.conid, vorabStart), ende: exportPrice(res.account, res.conid, vorabEnd) };
+      const typed = (userPrices && userPrices[key] && userPrices[key][n]) || {};
+      const fromExport = { beginn: exportPrice(res.account, res.conid, (n - 1) + '-12-31'), ende: exportPrice(res.account, res.conid, n + '-12-31') };
       const price = function (which) {
         const cents = M.parseEuro(typed[which]);
         if (cents > 0) return { cents: cents, source: 'eingabe' };
         return { cents: fromExport[which], source: fromExport[which] === null ? '' : 'export' };
       };
-      const beginn = price('beginn');
-      const ende = price('ende');
-      const fund = {
-        key: key, security: base.security, exportBeginn: fromExport.beginn, exportEnde: fromExport.ende,
-        eingabe: { beginn: typed.beginn || '', ende: typed.ende || '' }, status: '', cents: null
+      basis.beginn = price('beginn');
+      basis.ende = price('ende');
+      // Eine Zeile der Preistabelle. status: bereit (Preise da), preise (fehlen), bestand (von Hand), berechnet (Vorabpauschale des Vorjahres).
+      basis.fund = {
+        key: key, year: n, security: secLabel(res.sec), exportBeginn: fromExport.beginn, exportEnde: fromExport.ende,
+        eingabe: { beginn: typed.beginn || '', ende: typed.ende || '' }, status: 'bereit', cents: null, abzug: null
       };
-      vorabFunds.push(fund);
-      const open = function (status, text) {
-        fund.status = status;
-        vorabOpen.push(Object.assign({}, base, { text: text, cents: null }));
-      };
-      if (prozent === null) return open('prozentsatz', 'Der Prozentsatz für den Basisertrag ' + vorabYear + ' ist nicht hinterlegt.');
-      if (atEnd.flags.missingHistory || atEnd.flags.short || atEnd.unprocessedActions.length) {
-        return open('bestand', 'Der Bestand am ' + M.fmtDate(vorabEnd) + ' lässt sich nicht sicher nachrechnen (fehlende Käufe, Leerverkauf oder Kapitalmaßnahme).');
-      }
-      // Nach einem Split passen der Preis je Anteil zu Jahresbeginn und die Stückzahl am Jahresende nicht mehr zusammen.
-      if (res.events.some(e => e.kind === 'corporateAction' && e.date.slice(0, 4) === String(vorabYear))) {
-        return open('bestand', 'Im Jahr ' + vorabYear + ' gab es eine Kapitalmaßnahme. Die Vorabpauschale ist für diesen Fonds von Hand zu rechnen.');
-      }
-      if (beginn.cents === null || ende.cents === null) {
-        const missing = [beginn.cents === null ? 'der Preis zu Jahresbeginn' : '', ende.cents === null ? 'der letzte Preis des Jahres' : ''].filter(Boolean).join(' und ');
-        return open('preise', 'Für ' + vorabYear + ' fehlt ' + missing + '. Trage ihn unten unter „Fondspreise“ ein.');
+      vorabFunds.push(basis.fund);
+      if (basis.beginn.cents === null || basis.ende.cents === null) {
+        basis.fehlt = 'preise';
+        basis.fund.status = 'preise';
+        return basis;
       }
 
       // Ausschüttungen des Jahres je Anteil: aus dem Buchungstext, ersatzweise Betrag geteilt durch den Bestand am Zahltag.
       let perShare = 0;
-      let estimated = false;
       model.cash.forEach(function (c) {
-        if (c.account !== res.account || c.conid !== res.conid || c.date.slice(0, 4) !== String(vorabYear)) return;
+        if (c.account !== res.account || c.conid !== res.conid || c.date.slice(0, 4) !== String(n)) return;
         const kind = CASH_KINDS[c.type];
         if (kind !== 'dividend' && kind !== 'pil') return;
         const stated = K.vorab.ausschuettungJeAnteil(c.description, c.currency);
         const held = F.positionAt(res.timeline, c.date);
         if (stated !== null) perShare += (c.amount < 0 ? -1 : 1) * stated * c.fx;
         else if (held > 0) perShare += c.amount * c.fx * M.QTY_SCALE / held;
-        if (stated === null) estimated = true;
+        if (stated === null) basis.estimated = true;
       });
-      const ausschuettung = Math.max(0, M.toCents(perShare));
+      basis.ausschuettung = Math.max(0, M.toCents(perShare));
+      return basis;
+    };
+    const vorabJeAnteil = (basis, monate) => K.vorab.jeAnteil({
+      beginnCents: basis.beginn.cents, endeCents: basis.ende.cents, ausschuettungCents: basis.ausschuettung, prozent: basis.prozent, monate: monate
+    });
+
+    /* --- Vorabpauschale für das Vorjahr: gilt am ersten Werktag des Steuerjahres als zugeflossen (§ 18 Abs. 3 InvStG) --- */
+
+    const vorabLines = { offen: [] };
+    FUND_TYPES.forEach(function (t) {
+      vorabLines[t] = [];
+    });
+    const vorabOpen = [];
+    const vorabChecks = [];
+
+    results.forEach(function (res) {
+      if (res.group !== 'fonds' && res.group !== 'fonds_offen') return;
+      const atEnd = F.run(res.events.filter(e => e.date <= vorabEnd));
+      if (!atEnd.lots.length) return;
+      const base = { date: '', security: secLabel(res.sec), art: 'Vorabpauschale ' + vorabYear };
+      const basis = vorabBasis(res, vorabYear);
+      const fund = basis.fund;
+      const open = function (status, text) {
+        if (fund) fund.status = status;
+        vorabOpen.push(Object.assign({}, base, { text: text, cents: null }));
+      };
+      if (basis.prozent === 0) return;
+      if (basis.fehlt === 'prozentsatz') return open('', 'Der Prozentsatz für den Basisertrag ' + vorabYear + ' ist nicht hinterlegt.');
+      if (basis.fehlt === 'kapitalmassnahme') return open('', 'Im Jahr ' + vorabYear + ' gab es eine Kapitalmaßnahme. Die Vorabpauschale ist für diesen Fonds von Hand zu rechnen.');
+      if (atEnd.flags.missingHistory || atEnd.flags.short || atEnd.unprocessedActions.length) {
+        return open('bestand', 'Der Bestand am ' + M.fmtDate(vorabEnd) + ' lässt sich nicht sicher nachrechnen (fehlende Käufe, Leerverkauf oder Kapitalmaßnahme).');
+      }
+      if (basis.fehlt === 'preise') {
+        const missing = [basis.beginn.cents === null ? 'der Preis zu Jahresbeginn' : '', basis.ende.cents === null ? 'der letzte Preis des Jahres' : ''].filter(Boolean).join(' und ');
+        return open('preise', 'Für ' + vorabYear + ' fehlt ' + missing + '. Trage ihn unten unter „Fondspreise“ ein.');
+      }
 
       const columns = K.vorab.spalten(atEnd.lots, vorabYear);
       fund.cents = 0;
       fund.status = 'berechnet';
       columns.forEach(function (col) {
-        const r = K.vorab.jeAnteil({ beginnCents: beginn.cents, endeCents: ende.cents, ausschuettungCents: ausschuettung, prozent: prozent, monate: col.monate });
+        const r = vorabJeAnteil(basis, col.monate);
         const cents = Math.round(r.ergebnis * col.q / M.QTY_SCALE);
         const bought = col.erwerb ? 'gekauft ' + col.erwerb.slice(5, 7) + '.' + col.erwerb.slice(0, 4) : 'gekauft vor ' + vorabYear;
         const step = (zeile, value) => 'Zeile ' + zeile + ': ' + M.fmtCents(value);
         fund.cents += cents;
         (res.group === 'fonds' ? vorabLines[res.type] : vorabLines.offen).push(Object.assign({}, base, {
           text: M.fmtQty(col.q) + ' Stk., ' + bought + ' · ' + [
-            step(vz.preisBeginn, beginn.cents), step(vz.basisertrag, r.basisertrag), step(vz.letzterPreis, ende.cents),
-            step(vz.ausschuettungen, ausschuettung), step(vz.mehrbetrag, r.mehrbetrag), step(vz.niedrigerer, r.niedrigerer),
+            step(vz.preisBeginn, basis.beginn.cents), step(vz.basisertrag, r.basisertrag), step(vz.letzterPreis, basis.ende.cents),
+            step(vz.ausschuettungen, basis.ausschuettung), step(vz.mehrbetrag, r.mehrbetrag), step(vz.niedrigerer, r.niedrigerer),
             step(vz.zwischen, r.zwischen), step(vz.kuerzung, r.kuerzung), step(vz.jeAnteil, r.ergebnis)
           ].join(' · '),
           cents: cents
@@ -500,13 +525,73 @@
       });
 
       const check = text => vorabChecks.push(Object.assign({}, base, { text: text, cents: fund.cents }));
-      if (beginn.source === 'export') {
-        check('Preis zu Jahresbeginn (' + eur(beginn.cents) + ') ist der Schlusskurs vom ' + M.fmtDate(vorabStart) + ' aus dem Export. Maßgeblich ist der erste Preis des Jahres ' + vorabYear + '.');
+      if (basis.beginn.source === 'export') {
+        check('Preis zu Jahresbeginn (' + eur(basis.beginn.cents) + ') ist der Schlusskurs vom ' + M.fmtDate((vorabYear - 1) + '-12-31') + ' aus dem Export. Maßgeblich ist der erste Preis des Jahres ' + vorabYear + '.');
       }
-      if (estimated) check('Ausschüttung je Anteil (' + eur(ausschuettung) + ') aus Betrag und Bestand am Zahltag geschätzt, weil der Buchungstext keinen Betrag je Anteil nennt.');
+      if (basis.estimated) check('Ausschüttung je Anteil (' + eur(basis.ausschuettung) + ') aus Betrag und Bestand am Zahltag geschätzt, weil der Buchungstext keinen Betrag je Anteil nennt.');
       const distributing = model.cash.some(c => c.conid === res.conid && (CASH_KINDS[c.type] === 'dividend' || CASH_KINDS[c.type] === 'pil'));
       if (distributing && columns.some(col => col.monate > 0)) {
         check('Anteile wurden im Lauf des Jahres ' + vorabYear + ' gekauft. Ausschüttungen des Fonds vor dem Kauf stehen nicht im Export. Gab es welche, ist die Vorabpauschale zu hoch.');
+      }
+    });
+
+    /* --- Fondsverkäufe: Abzug der Vorabpauschalen aus der Haltezeit (§ 19 Abs. 1 InvStG, Zeile 53 des Vordrucks) --- */
+
+    const abzugItems = [];
+    const abzugOpen = [];
+    const fehltText = { prozentsatz: 'Prozentsatz nicht hinterlegt', kapitalmassnahme: 'Kapitalmaßnahme', preise: 'Preise fehlen' };
+    fundSaleRefs.forEach(function (ref) {
+      const saleDate = ref.r.trade.date;
+      const saleYear = Number(saleDate.slice(0, 4));
+      // Nach einem Split passen die Preise je Anteil früherer Jahre nicht mehr zur verkauften Stückzahl.
+      const hadAction = ref.res.events.some(e => e.kind === 'corporateAction' && e.date <= saleDate);
+      const byYear = new Map();
+      const missing = new Map();
+      const fromExport = new Set();
+      const estimated = new Set();
+      ref.r.pieces.forEach(function (p) {
+        const lotYear = Number(p.lotDate.slice(0, 4));
+        // Jedes Jahr, an dessen Ende die Anteile noch im Depot lagen. Die Vorabpauschale gibt es seit 2018.
+        for (let n = Math.max(2018, lotYear); n < saleYear; n++) {
+          const prozent = K.forms.basisertragProzent(n);
+          if (prozent === 0) continue;
+          if (prozent !== null && hadAction) {
+            missing.set(n, fehltText.kapitalmassnahme);
+            continue;
+          }
+          const basis = vorabBasis(ref.res, n);
+          if (basis.fehlt) {
+            missing.set(n, fehltText[basis.fehlt]);
+            continue;
+          }
+          // Im Jahr des Kaufs: ein Zwölftel weniger für jeden vollen Monat vor dem Kaufmonat.
+          const monate = lotYear === n ? Number(p.lotDate.slice(5, 7)) - 1 : 0;
+          const cents = Math.round(vorabJeAnteil(basis, monate).ergebnis * p.q / M.QTY_SCALE);
+          byYear.set(n, (byYear.get(n) || 0) + cents);
+          basis.fund.abzug = (basis.fund.abzug || 0) + cents;
+          if (basis.beginn.source === 'export') fromExport.add(n);
+          if (basis.estimated) estimated.add(n);
+        }
+      });
+      const sale = { date: ref.item.date, security: ref.item.security, art: 'Verkauf' };
+      const sorted = set => Array.from(set).sort().join(', ');
+      const years = Array.from(byYear.keys()).sort();
+      if (years.length) {
+        const cents = years.reduce((s, n) => s + byYear.get(n), 0);
+        const perYear = years.map(n => n + ': ' + eur(byYear.get(n))).join(', ');
+        ref.item.cents -= cents;
+        ref.item.text += ' − Vorabpauschalen ' + eur(cents) + ' (' + perYear + ')';
+        abzugItems.push(Object.assign({
+          text: 'Abgezogen für ' + perYear +
+            (fromExport.size ? '. Preis zu Jahresbeginn ist der Schlusskurs des Vorjahres aus dem Export: ' + sorted(fromExport) : '') +
+            (estimated.size ? '. Ausschüttung je Anteil geschätzt: ' + sorted(estimated) : ''),
+          cents: cents
+        }, sale));
+      }
+      if (missing.size) {
+        abzugOpen.push(Object.assign({
+          text: 'Nicht abgezogen für ' + Array.from(missing.keys()).sort().map(n => n + ' (' + missing.get(n) + ')').join(', '), cents: null
+        }, sale));
       }
     });
 
@@ -700,9 +785,15 @@
     if (vorabChecks.length) {
       warn('pruefen', 'Vorabpauschale prüfen', 'Die Vorabpauschale für ' + vorabYear + ' ist bei diesen Fonds mit einer Annahme gerechnet.', vorabChecks);
     }
-    if (fundSaleCount) {
-      warn('pruefen', 'Fondsverkäufe ohne Abzug früherer Vorabpauschalen',
-        'Bereits versteuerte Vorabpauschalen mindern den Gewinn beim Verkauf. Diese Version zieht sie nicht ab, der ausgewiesene Gewinn kann dadurch zu hoch sein.');
+    if (abzugItems.length) {
+      warn('pruefen', 'Abzug früherer Vorabpauschalen prüfen',
+        'Vom Ergebnis dieser Fondsverkäufe sind die Vorabpauschalen der Haltezeit abgezogen (Anlage KAP-INV, Zeile ' + forms.kapinv.verkaufRechnung.vorabpauschalen + '). Abgezogen ist, was dieser Bericht für die einzelnen Jahre rechnet. Maßgeblich sind die Beträge, die in deinen Steuererklärungen der früheren Jahre angesetzt wurden. Weichen sie ab, ist der Abzug von Hand zu berichtigen.',
+        abzugItems);
+    }
+    if (abzugOpen.length) {
+      warn('pruefen', 'Abzug früherer Vorabpauschalen unvollständig',
+        'Für diese Jahre der Haltezeit ließ sich die Vorabpauschale nicht rechnen. Sie ist vom Ergebnis des Verkaufs nicht abgezogen, der ausgewiesene Gewinn kann dadurch zu hoch sein. Fehlende Preise trägst du unten unter „Fondspreise“ ein.',
+        abzugOpen);
     }
     if (oldFundLots.length) {
       warn('pruefen', 'Fondsanteile von vor 2018', 'Für Anteile, die vor 2018 gekauft wurden, gelten Sonderregeln (fiktiver Verkauf zum 31.12.2017). Diese Version berücksichtigt sie nicht.', oldFundLots);
@@ -757,6 +848,7 @@
     }
 
     warnings.sort((a, b) => LEVEL_ORDER[a.level] - LEVEL_ORDER[b.level]);
+    vorabFunds.sort((a, b) => (a.security < b.security ? -1 : a.security > b.security ? 1 : a.year - b.year));
     const counts = { offen: 0, pruefen: 0, info: 0 };
     warnings.forEach(w => { counts[w.level]++; });
 
