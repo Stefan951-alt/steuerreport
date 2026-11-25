@@ -6,28 +6,32 @@
   const M = K.money;
   const R = K.report;
   const STORE_KEY = 'kapreport.wertpapierarten.v1';
+  const PRICE_KEY = 'kapreport.fondspreise.v1';
   const LEVELS = [
     { id: 'offen', badge: 'Offen', title: 'Offen – fehlt in den Summen' },
     { id: 'pruefen', badge: 'Prüfen', title: 'Prüfen – berechnet mit einer Annahme' },
     { id: 'info', badge: 'Hinweis', title: 'Hinweise' }
   ];
 
-  const state = { files: [], errors: [], userTypes: readTypes(), year: null, open: new Set(), report: null };
+  const state = { files: [], errors: [], userTypes: readStore(STORE_KEY), userPrices: readStore(PRICE_KEY), year: null, open: new Set(), report: null };
   let fileSeq = 0;
   let printing = false;
   const $ = id => document.getElementById(id);
 
-  function readTypes() {
+  function readStore(key) {
     try {
-      return JSON.parse(localStorage.getItem(STORE_KEY) || '{}') || {};
+      return JSON.parse(localStorage.getItem(key) || '{}') || {};
     } catch (e) {
       return {};
     }
   }
-  function saveTypes() {
+  function saveStore(key, value) {
     try {
-      localStorage.setItem(STORE_KEY, JSON.stringify(state.userTypes));
-    } catch (e) { /* ohne Speicher gilt die Auswahl nur für diese Sitzung */ }
+      localStorage.setItem(key, JSON.stringify(value));
+    } catch (e) { /* ohne Speicher gelten Auswahl und Eingaben nur für diese Sitzung */ }
+  }
+  function saveTypes() {
+    saveStore(STORE_KEY, state.userTypes);
   }
 
   function h(tag, attrs, kids) {
@@ -271,6 +275,66 @@
     ]);
   }
 
+  function setPrice(key, year, which, value) {
+    const byYear = state.userPrices[key] = state.userPrices[key] || {};
+    const entry = byYear[year] = byYear[year] || {};
+    if (value) entry[which] = value;
+    else delete entry[which];
+    if (!Object.keys(entry).length) delete byYear[year];
+    if (!Object.keys(byYear).length) delete state.userPrices[key];
+    saveStore(PRICE_KEY, state.userPrices);
+    renderResult();
+  }
+
+  // Die Vorabpauschale braucht je Fonds zwei Preise, die der Export nicht immer enthält. Hier lassen sie sich eintragen.
+  function pricesView(report) {
+    const v = report.vorab;
+    const byKey = new Map();
+    v.funds.forEach(function (f) {
+      const row = byKey.get(f.key) || { fund: f, cents: 0, open: false };
+      if (f.status === 'berechnet') row.cents += f.cents;
+      else row.open = true;
+      byKey.set(f.key, row);
+    });
+    if (!byKey.size) return null;
+
+    const field = function (fund, which, label) {
+      const fromExport = which === 'beginn' ? fund.exportBeginn : fund.exportEnde;
+      const typed = fund.eingabe[which];
+      const bad = typed !== '' && !(M.parseEuro(typed) > 0);
+      const hint = bad ? 'Bitte als Betrag mit Komma schreiben, zum Beispiel 88,50.'
+        : fromExport !== null ? 'Aus dem Export: ' + M.fmtCents(fromExport) + ' €' : 'Nicht im Export';
+      return h('td', null, [
+        h('input', {
+          type: 'text', inputmode: 'decimal', class: 'price' + (bad ? ' bad' : ''), value: typed,
+          placeholder: fromExport !== null ? M.fmtCents(fromExport) : '0,00', 'aria-label': label + ' von ' + fund.security,
+          onchange: ev => setPrice(fund.key, v.year, which, ev.target.value.trim())
+        }),
+        h('span', { class: 'desc', text: hint })
+      ]);
+    };
+    const statusText = { prozentsatz: 'Prozentsatz fehlt', bestand: 'Von Hand zu rechnen', preise: 'Preis fehlt' };
+    const body = Array.from(byKey.values()).map(function (row) {
+      return h('tr', { class: row.open ? 'todo' : null }, [
+        h('td', null, [h('strong', { text: row.fund.security })]),
+        field(row.fund, 'beginn', 'Preis zu Jahresbeginn ' + v.year),
+        field(row.fund, 'ende', 'Letzter Preis ' + v.year),
+        h('td', { class: 'num', text: row.open ? statusText[row.fund.status] || 'Offen' : M.fmtCents(row.cents) + ' €' })
+      ]);
+    });
+
+    return h('section', { class: 'card', id: 'fondspreise' }, [
+      h('h2', null, ['Fondspreise für die Vorabpauschale ', h('span', { class: 'year', text: String(v.year) })]),
+      h('p', { class: 'section-note', text: 'Der Vordruck verlangt je Fonds den Preis eines Anteils zu Beginn und am Ende des Jahres ' + v.year + ', jeweils in Euro. Leere Felder nehmen den Wert aus dem Export, soweit er dort steht. Deine Eingaben werden in diesem Browser gespeichert.' }),
+      h('div', { class: 'scroll' }, [h('table', { class: 'securities' }, [
+        h('thead', null, [h('tr', null, [
+          h('th', { text: 'Fonds' }), h('th', { text: 'Preis zu Jahresbeginn €' }), h('th', { text: 'Letzter Preis €' }), h('th', { class: 'num', text: 'Vorabpauschale' })
+        ])]),
+        h('tbody', null, body)
+      ])])
+    ]);
+  }
+
   function downloadCsv() {
     if (!state.report) return;
     const blob = new Blob([R.toCsv(state.report)], { type: 'text/csv;charset=utf-8' });
@@ -310,10 +374,10 @@
       state.files.forEach(f => f.statements.forEach(s => statements.push(s)));
       const model = R.buildModel(statements);
       if (model.years.indexOf(state.year) < 0) state.year = defaultYear(model.years);
-      const report = R.buildReport(model, state.userTypes, state.year);
+      const report = R.buildReport(model, state.userTypes, state.year, state.userPrices);
       state.report = report;
       [toolbarView(model), statusView(report)]
-        .concat(report.sections.map(s => sectionView(s, report)), [warningsView(report), securitiesView(model)])
+        .concat(report.sections.map(s => sectionView(s, report)), [warningsView(report), pricesView(report), securitiesView(model)])
         .forEach(function (node) {
           if (node) host.appendChild(node);
         });
