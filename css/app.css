@@ -152,6 +152,10 @@ td.sec { white-space: nowrap; }
 .securities td { vertical-align: middle; }
 .securities tr.todo td:first-child { box-shadow: inset 3px 0 0 var(--bad); padding-left: 10px; }
 .securities .desc { display: block; font-size: 13px; color: var(--muted); }
+.price { font: inherit; font-size: 15px; width: 10ch; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--rule); background: var(--card); color: var(--ink); text-align: right; font-variant-numeric: tabular-nums; }
+.price:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.price.bad { border-color: var(--bad); }
+.price.bad + .desc { color: var(--bad); }
 
 /* Fuß */
 .foot { margin-top: 30px; font-size: 14px; max-width: 78ch; }
