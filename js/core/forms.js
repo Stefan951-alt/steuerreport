@@ -5,7 +5,8 @@
   const K = root.KapReport = root.KapReport || {};
 
   const BY_YEAR = {
-    // Stand: aus Formularkopien und Ausfüllhilfen geprüft, nicht am amtlichen Vordruck selbst.
+    // Stand 25.11.2026: mit den amtlichen Vordrucken im Formular-Management-System der Bundesfinanzverwaltung abgeglichen
+    // (Anlage KAP 2025, Fassung Oktober 2025; Anlage KAP-INV 2025, Fassung September 2025).
     2025: {
       kap: { inland: 18, ausland: 19, aktiengewinne: 20, sonstigeVerluste: 22, aktienverluste: 23, auslaendischeSteuern: 41 },
       kapinv: {
