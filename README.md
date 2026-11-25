@@ -36,6 +36,7 @@ Voraussetzung ist ein Konto mit Basiswährung EUR.
 | Ausländische Quellensteuer auf Dividenden | Anlage KAP Zeile 41, höchstens 15 % der Bruttodividende |
 | Verkäufe und Ausschüttungen von Fonds und ETFs | Anlage KAP-INV, Zeile je nach Fondsart. Beim Verkauf sind die Vorabpauschalen aus der Haltezeit abgezogen (Zeile 53 des Vordrucks) |
 | Vorabpauschale für Fonds und ETFs | Anlage KAP-INV Zeilen 9 bis 13, gerechnet wie auf Seite 2 des Vordrucks (Zeilen 33 bis 45) |
+| Optionen auf Aktien und Indizes | Stillhalterprämien, Rückkäufe, Verkauf, Verfall und Barausgleich → Anlage KAP Zeile 19, Verluste und Rückkäufe zusätzlich Zeile 22 |
 | Aktiensplits | Anschaffungskosten werden auf die neue Stückzahl verteilt |
 
 Die Zeilennummern sind für das Steuerjahr 2025 hinterlegt (`js/core/forms.js`). Für andere Jahre zeigt der Bericht die Nummern von 2025 und weist darauf hin. Die Nummern für 2025 sind mit den amtlichen Vordrucken abgeglichen (Stand November 2026).
@@ -50,13 +51,16 @@ Die Zeilennummern sind für das Steuerjahr 2025 hinterlegt (`js/core/forms.js`).
 - **Vorabpauschale:** Sie gilt am ersten Werktag des Folgejahres als zugeflossen. Im Bericht für 2025 steht deshalb die Vorabpauschale für 2024. Gerechnet wird je Anteil in Euro und Cent, wie im Vordruck.
 - **Prozentsatz für den Basisertrag:** Hinterlegt für 2018 bis 2024: 0,609 %, 0,364 %, 0,049 %, 2021 und 2022 keine Vorabpauschale (Basiszins negativ), 1,785 %, 1,603 %. Die Werte ab 2019 stehen in Zeile 34 des Vordrucks des jeweiligen Folgejahres. Der Wert für 2018 folgt aus dem Basiszins von 0,87 % laut BMF-Schreiben vom 4.1.2018 und ist nicht am Vordruck abgeglichen.
 - **Abzug beim Verkauf von Fonds:** Vom Ergebnis eines Verkaufs zieht der Bericht die Vorabpauschalen ab, die während der Haltezeit angefallen sind (§ 19 Abs. 1 InvStG), je verkauftem Anteil nach FIFO und für jedes Jahr, an dessen Ende der Anteil noch im Depot lag. Abgezogen wird, was der Bericht selbst für diese Jahre rechnet. Maßgeblich sind die Beträge aus deinen früheren Steuererklärungen. Fehlen Preise für ein Jahr, wird dieses Jahr nicht abgezogen und als Prüfpunkt gemeldet.
+- **Optionen:** Gerechnet wird nach dem BMF-Schreiben „Einzelfragen zur Abgeltungsteuer“ vom 14.5.2025 (Rn. 21 bis 34). Verkaufte Option (Stillhalter): Die Prämie nach Gebühren zählt im Jahr des Zuflusses, ein Rückkauf als negative Einnahme im Jahr der Zahlung (§ 20 Abs. 1 Nr. 11 EStG), auch wenn die Option am Jahresende noch offen ist. Gekaufte Option: Prämie und Gebühren sind Anschaffungskosten, Verkauf, Barausgleich und Verfall ergeben Gewinn oder Verlust. Wird der Basiswert geliefert, entsteht bei der Option kein eigenes Ergebnis: Die Prämie des Käufers erhöht die Anschaffungskosten der Aktien (Call) oder mindert ihren Erlös (Put), die Prämie des Stillhalters bleibt Stillhalterprämie und die Aktien gelten als zum Basispreis gehandelt.
+- **Zeilen für Optionen:** Im Vordruck 2025 ist Zeile 21 frei, die Zeilen 24 und 25 auch. Optionsergebnisse stehen deshalb in Zeile 19, Verluste und Rückkäufe zusätzlich in Zeile 22. Für Jahre bis 2024 weist der Bericht darauf hin, dass der Vordruck dort eigene Zeilen hatte.
 - **Fondspreise:** Der Vordruck verlangt je Fonds und Jahr den Preis eines Anteils zu Beginn und am Ende des Jahres. Der Export enthält nur Kurse zum Jahresende. Den Preis zu Jahresbeginn trägst du im Bericht ein. Fehlt die Eingabe, nimmt der Bericht den Schlusskurs des Vorjahres und weist das als Prüfpunkt aus.
 
 ## Was nicht gerechnet wird
 
 Der Grundsatz: Was nicht sicher berechnet werden kann, steht als **offener Punkt** im Bericht und in keiner Summe. Solange offene Punkte bestehen, meldet der Bericht „Noch nicht vollständig“.
 
-- Optionen, Futures, CFDs, Anleihen, Zertifikate, Kryptowerte
+- Futures, Optionen auf Futures, Optionsscheine, CFDs, Anleihen, Zertifikate, Kryptowerte
+- Optionen, deren Kauf nicht in den geladenen Dateien steht, und Ausübungen oder Zuteilungen, zu denen sich die Lieferung der Aktien nicht zuordnen lässt
 - Vorabpauschale für Jahre ohne hinterlegten Prozentsatz und für Fonds mit einer Kapitalmaßnahme im Jahr
 - Abzug früherer Vorabpauschalen beim Verkauf, wenn es bei dem Fonds vorher eine Kapitalmaßnahme gab (zum Beispiel einen Split)
 - Leerverkäufe
@@ -71,6 +75,8 @@ Der Grundsatz: Was nicht sicher berechnet werden kann, steht als **offener Punkt
 - Die Obergrenze von 15 % für anrechenbare Quellensteuer ist der Regelfall der Doppelbesteuerungsabkommen. Für andere Länder als die USA weist der Bericht einen Prüfpunkt aus.
 - Die Fondsart (Aktienfonds, Mischfonds …) geht aus dem Export nicht hervor und muss je Fonds gewählt werden.
 - REITs werden wie Aktien behandelt.
+- Die Lieferung nach Ausübung oder Zuteilung einer Option erkennt der Bericht am Aktiengeschäft desselben Tages zum Basispreis mit dem Kürzel „A“ oder „Ex“.
+- Ein Barausgleich wird nur erkannt, wenn er als Erlös im Optionsgeschäft steht. Bucht IBKR ihn getrennt, fehlt er im Ergebnis. Wie IBKR das im Export darstellt, ist noch nicht an einem echten Export geprüft.
 
 ## Aufbau
 
@@ -83,6 +89,7 @@ js/core/money.js      Rechnen in Cent, Formatierung
 js/core/flex.js       Einlesen des Flex-Query-XML
 js/core/fifo.js       FIFO je Wertpapier, Aktiensplits
 js/core/vorab.js      Vorabpauschale je Anteil wie im Vordruck
+js/core/optionen.js   Optionen: Stillhalterprämien, Verkauf, Verfall, Ausübung
 js/core/report.js     Formularwerte, offene Punkte, CSV
 js/core/forms.js      Zeilennummern je Steuerjahr
 js/ui/app.js          Anzeige
@@ -104,5 +111,5 @@ GNU Affero General Public License v3.0 (AGPL-3.0). Der vollständige Text steht 
 
 1. Mit einem echten Export prüfen und mit dem Steuerbericht vergleichen, den IBKR selbst anbietet.
 2. Rechenlogik von einem Steuerberater durchsehen lassen.
-3. Optionen (Stillhalterprämien, Termingeschäfte).
+3. Futures und Optionen auf Futures.
 4. Weitere Broker.
