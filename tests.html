@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tests · Steuerreport</title>
+<style>
+  body { font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; max-width: 880px; margin: 32px auto; padding: 0 16px; color: #1d1c19; background: #f5f2ea; }
+  h1 { font-size: 20px; }
+  #summary { font-weight: 600; padding: 10px 14px; border-radius: 8px; }
+  ul { list-style: none; padding: 0; }
+  li { padding: 4px 0; border-bottom: 1px solid #dcd6c8; }
+  .good { color: #14532d; }
+  .bad { color: #9b2c1f; }
+  #summary.good { background: #e4efe6; }
+  #summary.bad { background: #f9e3df; }
+</style>
+</head>
+<body>
+<h1>Tests des Rechenkerns</h1>
+<p id="summary">Tests laufen …</p>
+<ul id="list"></ul>
+<script src="js/core/money.js"></script>
+<script src="js/core/forms.js"></script>
+<script src="js/core/flex.js"></script>
+<script src="js/core/fifo.js"></script>
+<script src="js/core/report.js"></script>
+<script src="beispiele/beispiel.js"></script>
+<script src="tests/tests.js"></script>
+</body>
+</html>
