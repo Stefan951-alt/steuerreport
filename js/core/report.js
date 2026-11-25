@@ -180,7 +180,8 @@
 
   /* ---------- Schritt 2: Bericht für ein Steuerjahr ---------- */
 
-  function buildReport(model, userTypes, yearInput) {
+  // userPrices: vom Nutzer eingetragene Fondspreise je Anteil in Euro, { Wertpapier: { Kalenderjahr: { beginn, ende } } }.
+  function buildReport(model, userTypes, yearInput, userPrices) {
     const year = Number(yearInput);
     const Y = String(year);
     const forms = K.forms.forYear(year);
@@ -247,6 +248,7 @@
       }
       g.events.sort(F.compareEvents);
       const res = F.run(g.events);
+      res.events = g.events;
       res.account = g.account;
       res.conid = g.conid;
       res.sec = secOf(g.conid);
@@ -398,6 +400,130 @@
       if (reasons.length) withholdingChecks.push(Object.assign({}, base, { text: reasons.join(' '), cents: credit }));
     });
 
+    /* --- Vorabpauschale für das Vorjahr: gilt am ersten Werktag des Steuerjahres als zugeflossen (§ 18 Abs. 3 InvStG) --- */
+
+    const vorabYear = year - 1;
+    const vorabEnd = vorabYear + '-12-31';
+    const vorabStart = (vorabYear - 1) + '-12-31';
+    const prozent = K.forms.basisertragProzent(vorabYear);
+    const vz = forms.kapinv.vorabRechnung;
+    const vorabLines = { offen: [] };
+    FUND_TYPES.forEach(function (t) {
+      vorabLines[t] = [];
+    });
+    const vorabFunds = [];
+    const vorabOpen = [];
+    const vorabChecks = [];
+
+    // Kurs je Anteil in Euro-Cent aus dem Abschnitt „Open Positions“ eines Auszugs, der genau an diesem Tag endet.
+    const exportPrice = function (account, conid, isoDate) {
+      let cents = null;
+      model.statements.forEach(function (st) {
+        if (st.accountId !== account || st.to !== isoDate || !st.openPositions) return;
+        const p = st.openPositions.find(x => x.conid === conid);
+        if (!p || !(p.markPrice > 0)) return;
+        const fx = p.currency === 'EUR' ? 1 : p.fx;
+        if (fx) cents = M.toCents(p.markPrice * fx);
+      });
+      return cents;
+    };
+
+    results.forEach(function (res) {
+      if (res.group !== 'fonds' && res.group !== 'fonds_offen') return;
+      const atEnd = F.run(res.events.filter(e => e.date <= vorabEnd));
+      if (!atEnd.lots.length) return;
+      const key = typeKey(res.sec);
+      const base = { date: '', security: secLabel(res.sec), art: 'Vorabpauschale ' + vorabYear };
+      const typed = (userPrices && userPrices[key] && userPrices[key][vorabYear]) || {};
+      const fromExport = { beginn: exportPrice(res.account, res.conid, vorabStart), ende: exportPrice(res.account, res.conid, vorabEnd) };
+      const price = function (which) {
+        const cents = M.parseEuro(typed[which]);
+        if (cents > 0) return { cents: cents, source: 'eingabe' };
+        return { cents: fromExport[which], source: fromExport[which] === null ? '' : 'export' };
+      };
+      const beginn = price('beginn');
+      const ende = price('ende');
+      const fund = {
+        key: key, security: base.security, exportBeginn: fromExport.beginn, exportEnde: fromExport.ende,
+        eingabe: { beginn: typed.beginn || '', ende: typed.ende || '' }, status: '', cents: null
+      };
+      vorabFunds.push(fund);
+      const open = function (status, text) {
+        fund.status = status;
+        vorabOpen.push(Object.assign({}, base, { text: text, cents: null }));
+      };
+      if (prozent === null) return open('prozentsatz', 'Der Prozentsatz für den Basisertrag ' + vorabYear + ' ist nicht hinterlegt.');
+      if (atEnd.flags.missingHistory || atEnd.flags.short || atEnd.unprocessedActions.length) {
+        return open('bestand', 'Der Bestand am ' + M.fmtDate(vorabEnd) + ' lässt sich nicht sicher nachrechnen (fehlende Käufe, Leerverkauf oder Kapitalmaßnahme).');
+      }
+      // Nach einem Split passen der Preis je Anteil zu Jahresbeginn und die Stückzahl am Jahresende nicht mehr zusammen.
+      if (res.events.some(e => e.kind === 'corporateAction' && e.date.slice(0, 4) === String(vorabYear))) {
+        return open('bestand', 'Im Jahr ' + vorabYear + ' gab es eine Kapitalmaßnahme. Die Vorabpauschale ist für diesen Fonds von Hand zu rechnen.');
+      }
+      if (beginn.cents === null || ende.cents === null) {
+        const missing = [beginn.cents === null ? 'der Preis zu Jahresbeginn' : '', ende.cents === null ? 'der letzte Preis des Jahres' : ''].filter(Boolean).join(' und ');
+        return open('preise', 'Für ' + vorabYear + ' fehlt ' + missing + '. Trage ihn unten unter „Fondspreise“ ein.');
+      }
+
+      // Ausschüttungen des Jahres je Anteil: aus dem Buchungstext, ersatzweise Betrag geteilt durch den Bestand am Zahltag.
+      let perShare = 0;
+      let estimated = false;
+      model.cash.forEach(function (c) {
+        if (c.account !== res.account || c.conid !== res.conid || c.date.slice(0, 4) !== String(vorabYear)) return;
+        const kind = CASH_KINDS[c.type];
+        if (kind !== 'dividend' && kind !== 'pil') return;
+        const stated = K.vorab.ausschuettungJeAnteil(c.description, c.currency);
+        const held = F.positionAt(res.timeline, c.date);
+        if (stated !== null) perShare += (c.amount < 0 ? -1 : 1) * stated * c.fx;
+        else if (held > 0) perShare += c.amount * c.fx * M.QTY_SCALE / held;
+        if (stated === null) estimated = true;
+      });
+      const ausschuettung = Math.max(0, M.toCents(perShare));
+
+      const columns = K.vorab.spalten(atEnd.lots, vorabYear);
+      fund.cents = 0;
+      fund.status = 'berechnet';
+      columns.forEach(function (col) {
+        const r = K.vorab.jeAnteil({ beginnCents: beginn.cents, endeCents: ende.cents, ausschuettungCents: ausschuettung, prozent: prozent, monate: col.monate });
+        const cents = Math.round(r.ergebnis * col.q / M.QTY_SCALE);
+        const bought = col.erwerb ? 'gekauft ' + col.erwerb.slice(5, 7) + '.' + col.erwerb.slice(0, 4) : 'gekauft vor ' + vorabYear;
+        const step = (zeile, value) => 'Zeile ' + zeile + ': ' + M.fmtCents(value);
+        fund.cents += cents;
+        (res.group === 'fonds' ? vorabLines[res.type] : vorabLines.offen).push(Object.assign({}, base, {
+          text: M.fmtQty(col.q) + ' Stk., ' + bought + ' · ' + [
+            step(vz.preisBeginn, beginn.cents), step(vz.basisertrag, r.basisertrag), step(vz.letzterPreis, ende.cents),
+            step(vz.ausschuettungen, ausschuettung), step(vz.mehrbetrag, r.mehrbetrag), step(vz.niedrigerer, r.niedrigerer),
+            step(vz.zwischen, r.zwischen), step(vz.kuerzung, r.kuerzung), step(vz.jeAnteil, r.ergebnis)
+          ].join(' · '),
+          cents: cents
+        }));
+      });
+
+      const check = text => vorabChecks.push(Object.assign({}, base, { text: text, cents: fund.cents }));
+      if (beginn.source === 'export') {
+        check('Preis zu Jahresbeginn (' + eur(beginn.cents) + ') ist der Schlusskurs vom ' + M.fmtDate(vorabStart) + ' aus dem Export. Maßgeblich ist der erste Preis des Jahres ' + vorabYear + '.');
+      }
+      if (estimated) check('Ausschüttung je Anteil (' + eur(ausschuettung) + ') aus Betrag und Bestand am Zahltag geschätzt, weil der Buchungstext keinen Betrag je Anteil nennt.');
+      const distributing = model.cash.some(c => c.conid === res.conid && (CASH_KINDS[c.type] === 'dividend' || CASH_KINDS[c.type] === 'pil'));
+      if (distributing && columns.some(col => col.monate > 0)) {
+        check('Anteile wurden im Lauf des Jahres ' + vorabYear + ' gekauft. Ausschüttungen des Fonds vor dem Kauf stehen nicht im Export. Gab es welche, ist die Vorabpauschale zu hoch.');
+      }
+    });
+
+    // Fonds, die laut IBKR am Jahresende im Depot lagen, zu denen aber keine Käufe geladen sind.
+    model.statements.forEach(function (st) {
+      if (st.to !== vorabEnd || !st.openPositions) return;
+      st.openPositions.forEach(function (p) {
+        const group = groupOf(p.conid);
+        if (!(p.position > 0) || (group !== 'fonds' && group !== 'fonds_offen')) return;
+        if (results.some(r => r.account === st.accountId && r.conid === p.conid)) return;
+        vorabOpen.push({
+          date: '', security: secLabel(secOf(p.conid)), art: 'Vorabpauschale ' + vorabYear,
+          text: 'Bestand laut IBKR am ' + M.fmtDate(vorabEnd) + ', aber die Käufe fehlen in den geladenen Dateien.', cents: null
+        });
+      });
+    });
+
     /* --- Formularzeilen --- */
 
     const line = function (form, number, label, items, note) {
@@ -422,6 +548,10 @@
     const invLines = [];
     FUND_TYPES.forEach(function (t) {
       if (fundDistributions[t].length) invLines.push(line('KAP-INV', forms.kapinv.ausschuettung[t], 'Ausschüttungen: ' + TYPES[t].label + ' (vor Teilfreistellung)', fundDistributions[t]));
+      if (vorabLines[t].length) {
+        invLines.push(line('KAP-INV', forms.kapinv.vorabpauschaleJeArt[t], 'Vorabpauschalen für ' + vorabYear + ': ' + TYPES[t].label + ' (vor Teilfreistellung)', vorabLines[t],
+          'Rechenweg wie Zeilen ' + vz.preisBeginn + ' bis ' + vz.ergebnis + ' des Vordrucks.'));
+      }
       if (fundSales[t].length) invLines.push(line('KAP-INV', forms.kapinv.veraeusserung[t], 'Gewinne und Verluste aus Verkäufen: ' + TYPES[t].label + ' (vor Teilfreistellung)', fundSales[t]));
     });
     invLines.sort((a, b) => Number(a.line) - Number(b.line));
@@ -429,6 +559,7 @@
     const pendingLines = [];
     if (fundDistributions.offen.length) pendingLines.push(line('', '?', 'Fondsausschüttungen, Fondsart noch offen', fundDistributions.offen));
     if (fundSales.offen.length) pendingLines.push(line('', '?', 'Gewinne und Verluste aus Fondsverkäufen, Fondsart noch offen', fundSales.offen));
+    if (vorabLines.offen.length) pendingLines.push(line('', '?', 'Vorabpauschalen für ' + vorabYear + ', Fondsart noch offen', vorabLines.offen));
 
     const sections = [{ id: 'kap', title: 'Anlage KAP', lines: kapLines, note: 'Im Vordruck stehen die Zeilen ' + kap.inland + ' bis ' + kap.aktienverluste + ' in vollen Euro, Zeile ' + kap.auslaendischeSteuern + ' mit Cent.' }];
     if (invLines.length) sections.push({ id: 'kapinv', title: 'Anlage KAP-INV', lines: invLines, note: 'Beträge in voller Höhe eintragen, im Vordruck in vollen Euro. Die Teilfreistellung zieht das Finanzamt ab.' });
@@ -503,27 +634,15 @@
     }
     if (pendingLines.length) {
       warn('offen', 'Fondsart fehlt',
-        'Ausschüttungen und Verkäufe dieser Fonds sind berechnet, aber noch keiner Zeile zugeordnet. Wähle die Fondsart unten unter „Wertpapiere einordnen“.',
-        fundDistributions.offen.concat(fundSales.offen));
+        'Ausschüttungen, Vorabpauschalen und Verkäufe dieser Fonds sind berechnet, aber noch keiner Zeile zugeordnet. Wähle die Fondsart unten unter „Wertpapiere einordnen“.',
+        fundDistributions.offen.concat(vorabLines.offen, fundSales.offen));
     }
 
-    const previousYearEnd = (year - 1) + '-12-31';
-    const heldFunds = new Map();
-    results.forEach(function (res) {
-      if ((res.group === 'fonds' || res.group === 'fonds_offen') && F.positionAt(res.timeline, previousYearEnd) > 0) heldFunds.set(res.account + '|' + res.conid, res.sec);
-    });
-    model.statements.forEach(function (st) {
-      if (st.to !== previousYearEnd || !st.openPositions) return;
-      st.openPositions.forEach(function (p) {
-        const group = groupOf(p.conid);
-        if (p.position > 0 && (group === 'fonds' || group === 'fonds_offen')) heldFunds.set(st.accountId + '|' + p.conid, secOf(p.conid));
-      });
-    });
-    if (heldFunds.size) {
+    if (vorabOpen.length) {
       const vp = forms.kapinv.vorabpauschale;
       warn('offen', 'Vorabpauschale nicht berechnet',
-        'Für Fonds, die du am Jahresanfang gehalten hast, kann eine Vorabpauschale anfallen (Anlage KAP-INV, Zeilen ' + vp.von + ' bis ' + vp.bis + '). Diese Version berechnet sie nicht.',
-        Array.from(heldFunds.values()).map(sec => ({ date: '', security: secLabel(sec), art: 'Fonds', text: 'Bestand am ' + M.fmtDate(previousYearEnd), cents: null })));
+        'Für Fonds, die du am ' + M.fmtDate(vorabEnd) + ' gehalten hast, kann eine Vorabpauschale anfallen (Anlage KAP-INV, Zeilen ' + vp.von + ' bis ' + vp.bis + '). Für diese Fonds ließ sie sich nicht berechnen.',
+        vorabOpen);
     }
 
     if (germanDividends.length || germanWithholding.length) {
@@ -577,6 +696,9 @@
     }
     if (fundWithholding.length) {
       warn('pruefen', 'Quellensteuer auf Fondsausschüttungen', 'Diese Quellensteuer ist in Zeile ' + kap.auslaendischeSteuern + ' nicht enthalten. Ob und in welcher Höhe sie anrechenbar ist, bitte gesondert klären.', fundWithholding);
+    }
+    if (vorabChecks.length) {
+      warn('pruefen', 'Vorabpauschale prüfen', 'Die Vorabpauschale für ' + vorabYear + ' ist bei diesen Fonds mit einer Annahme gerechnet.', vorabChecks);
     }
     if (fundSaleCount) {
       warn('pruefen', 'Fondsverkäufe ohne Abzug früherer Vorabpauschalen',
@@ -640,7 +762,8 @@
 
     return {
       year: year, forms: forms, accounts: model.accounts, sections: sections, warnings: warnings,
-      counts: counts, complete: counts.offen === 0
+      counts: counts, complete: counts.offen === 0,
+      vorab: { year: vorabYear, funds: vorabFunds }
     };
   }
 
