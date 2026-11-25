@@ -516,6 +516,147 @@
     ok(!warning(r, /Abzug früherer Vorabpauschalen prüfen/), 'nichts abgezogen');
   });
 
+  /* ---------- Optionen ---------- */
+
+  // Regeln nach dem BMF-Schreiben „Einzelfragen zur Abgeltungsteuer“ vom 14.5.2025, Rn. 21 bis 34.
+  // Basiswert ist die Aktie AAA (conid 1), ein Kontrakt steht für 100 Aktien.
+  const call = { assetCategory: 'OPT', subCategory: 'C', conid: '7', isin: '', symbol: 'AAA 250620C00050000', description: 'AAA 20JUN25 50 C', putCall: 'C', strike: '50', multiplier: '100', underlyingConid: '1' };
+  const put = Object.assign({}, call, { subCategory: 'P', conid: '8', symbol: 'AAA 250620P00040000', description: 'AAA 20JUN25 40 P', putCall: 'P', strike: '40' });
+  const opt = (kind, o) => trade(Object.assign({}, kind, o));
+
+  // Verkauf eines Puts zur Eröffnung: 150 USD − 1 USD Gebühr = 149 USD × 0,88 = 131,12 €.
+  // Die Prämie zählt beim Zufluss, auch wenn die Option am Jahresende noch offen ist (Rn. 25 und 33).
+  test('Stillhalter: Prämie nach Gebühren zählt im Jahr des Zuflusses', function () {
+    const r = run([statement({
+      trades: [opt(put, { currency: 'USD', fxRateToBase: '0.88', tradeDate: '20250610', quantity: '-1', proceeds: '150', ibCommission: '-1', openCloseIndicator: 'O' })],
+      positions: [position(Object.assign({}, put, { position: '-1' }))]
+    })], 2025);
+    eq(lineCents(r, 'KAP', 19), 13112, 'Zeile 19');
+    eq(lineCents(r, 'KAP', 22), undefined, 'Zeile 22 nur bei Verlusten');
+    ok(warning(r, /Optionen im Überblick/, 'info'), 'Überblick fehlt');
+    ok(warning(r, /Bestandsabgleich stimmt/, 'info'), 'Bestand der Option muss stimmen');
+    eq(r.complete, true, 'vollständig');
+  });
+
+  // Verkauf 04.11.2024: 200 USD − 1 USD = 199 USD × 0,92 = 183,08 € (Jahr 2024).
+  // Rückkauf 03.02.2025: 50 USD + 1 USD = 51 USD × 0,95 = 48,45 € (Jahr 2025, negative Einnahme nach § 20 Abs. 1 Nr. 11 EStG).
+  const shortOverYears = [
+    statement({ year: 2024, trades: [opt(call, { currency: 'USD', fxRateToBase: '0.92', tradeDate: '20241104', quantity: '-1', proceeds: '200', ibCommission: '-1', openCloseIndicator: 'O' })] }),
+    statement({ year: 2025, trades: [opt(call, { currency: 'USD', fxRateToBase: '0.95', tradeDate: '20250203', quantity: '1', proceeds: '-50', ibCommission: '-1', openCloseIndicator: 'C' })] })
+  ];
+
+  test('Stillhalter: Rückkauf im Folgejahr ist negative Einnahme im Jahr der Zahlung', function () {
+    const before = run(shortOverYears, 2024);
+    eq(lineCents(before, 'KAP', 19), 18308, 'Zeile 19 für 2024');
+    ok(warning(before, /eigene Zeilen in älteren Vordrucken/, 'pruefen'), 'Hinweis auf den Vordruck 2024 fehlt');
+    const r = run(shortOverYears, 2025);
+    eq(lineCents(r, 'KAP', 19), -4845, 'Zeile 19 für 2025');
+    eq(lineCents(r, 'KAP', 22), 4845, 'Zeile 22 für 2025');
+    ok(!warning(r, /Optionen prüfen/), 'kein Prüfpunkt, die Eröffnung ist geladen');
+  });
+
+  // Nur die Datei 2025 geladen: Der Rückkauf zählt trotzdem (48,45 €), mit Prüfpunkt.
+  test('Stillhalter: Rückkauf ohne geladene Eröffnung zählt und wird gemeldet', function () {
+    const r = run([shortOverYears[1]], 2025);
+    eq(lineCents(r, 'KAP', 19), -4845, 'Zeile 19');
+    ok(warning(r, /Optionen prüfen/, 'pruefen'), 'Prüfpunkt fehlt');
+  });
+
+  // Prämie 100 € − 1 € Gebühr = 99,00 €. Der Verfall löst nichts mehr aus.
+  test('Stillhalter: Verfall ändert nichts mehr', function () {
+    const r = run([statement({ trades: [
+      opt(put, { tradeDate: '20250303', quantity: '-1', proceeds: '100', ibCommission: '-1', openCloseIndicator: 'O' }),
+      opt(put, { tradeDate: '20250620', quantity: '1', tradePrice: '0', proceeds: '0', openCloseIndicator: 'C', notes: 'C;Ep', transactionType: 'BookTrade' })
+    ] })], 2025);
+    eq(lineCents(r, 'KAP', 19), 9900, 'Zeile 19');
+    eq(lineCents(r, 'KAP', 22), undefined, 'Zeile 22');
+  });
+
+  // Kauf 2 Calls: 400 USD + 2 USD = 402 USD × 0,90 = 361,80 €, je Kontrakt 180,90 € (Rn. 21).
+  // Verkauf 1 Call: 350 USD − 1 USD = 349 USD × 0,92 = 321,08 €. Gewinn 321,08 − 180,90 = 140,18 € (Rn. 24).
+  // Der zweite verfällt: Verlust 180,90 € (Rn. 27). Zeile 19: 140,18 − 180,90 = −40,72 €. Zeile 22: 180,90 €.
+  test('Gekaufte Option: Verkauf mit Gewinn, Verfall mit Verlust', function () {
+    const r = run([statement({ trades: [
+      opt(call, { currency: 'USD', fxRateToBase: '0.9', tradeDate: '20250110', quantity: '2', proceeds: '-400', ibCommission: '-2' }),
+      opt(call, { currency: 'USD', fxRateToBase: '0.92', tradeDate: '20250210', quantity: '-1', proceeds: '350', ibCommission: '-1' }),
+      opt(call, { currency: 'USD', fxRateToBase: '0.93', tradeDate: '20250620', quantity: '-1', tradePrice: '0', proceeds: '0', notes: 'C;Ep', transactionType: 'BookTrade' })
+    ] })], 2025);
+    eq(lineCents(r, 'KAP', 19), -4072, 'Zeile 19');
+    eq(lineCents(r, 'KAP', 22), 18090, 'Zeile 22');
+    eq(lineCents(r, 'KAP', 20), 0, 'Optionen sind keine Aktiengewinne');
+  });
+
+  // Kauf 1 Call: 200 € + 1 € = 201,00 €. Ausübung: 100 Aktien zu 50 € = 5.000 €. Anschaffungskosten der Aktien 5.201 € (Rn. 22).
+  // Verkauf der Aktien für 6.000 €: Gewinn 799,00 €, als Aktiengewinn in Zeile 20.
+  test('Gekaufter Call ausgeübt: Prämie zählt zu den Anschaffungskosten der Aktien', function () {
+    const r = run([statement({ trades: [
+      opt(call, { tradeDate: '20250110', quantity: '1', proceeds: '-200', ibCommission: '-1' }),
+      opt(call, { tradeDate: '20250321', quantity: '-1', tradePrice: '0', proceeds: '0', notes: 'C;Ex', transactionType: 'BookTrade' }),
+      trade({ tradeDate: '20250321', quantity: '100', tradePrice: '50', proceeds: '-5000', notes: 'Ex;O', transactionType: 'BookTrade' }),
+      trade({ tradeDate: '20250602', quantity: '-100', tradePrice: '60', proceeds: '6000' })
+    ] })], 2025);
+    eq(lineCents(r, 'KAP', 20), 79900, 'Zeile 20');
+    eq(lineCents(r, 'KAP', 19), 79900, 'Zeile 19: kein eigenes Ergebnis der Option');
+    ok(!warning(r, /Aktien aus Optionsgeschäften/), 'Optionsgeschäft ist zugeordnet');
+    ok(warning(r, /Ausgeübte und zugeteilte Optionen/, 'info'), 'Hinweis fehlt');
+    eq(r.complete, true, 'vollständig');
+  });
+
+  // 100 Aktien für 3.500 € gekauft. Kauf 1 Put: 150 € + 1 € = 151,00 €. Ausübung: Verkauf der 100 Aktien zu 40 € = 4.000 €.
+  // Die Prämie mindert den Gewinn aus den Aktien (Rn. 29): 4.000 − 151 − 3.500 = 349,00 €.
+  test('Gekaufter Put ausgeübt: Prämie mindert den Gewinn aus den Aktien', function () {
+    const r = run([
+      statement({ year: 2024, trades: [trade({ tradeDate: '20240502', quantity: '100', proceeds: '-3500' })] }),
+      statement({ year: 2025, trades: [
+        opt(put, { tradeDate: '20250110', quantity: '1', proceeds: '-150', ibCommission: '-1' }),
+        opt(put, { tradeDate: '20250321', quantity: '-1', tradePrice: '0', proceeds: '0', notes: 'C;Ex', transactionType: 'BookTrade' }),
+        trade({ tradeDate: '20250321', quantity: '-100', tradePrice: '40', proceeds: '4000', notes: 'Ex;C', transactionType: 'BookTrade' })
+      ] })
+    ], 2025);
+    eq(lineCents(r, 'KAP', 20), 34900, 'Zeile 20');
+    eq(lineCents(r, 'KAP', 19), 34900, 'Zeile 19');
+  });
+
+  // Verkauf 1 Put: 120 € − 1 € = 119,00 € Stillhalterprämie. Zuteilung: Kauf von 100 Aktien zu 40 € = 4.000 € (Rn. 33).
+  // Verkauf der Aktien für 4.300 €: Aktiengewinn 300,00 €. Zeile 19: 119,00 + 300,00 = 419,00 €.
+  test('Stillhalter zugeteilt: Aktien zum Basispreis, Prämie bleibt Stillhalterprämie', function () {
+    const r = run([statement({ trades: [
+      opt(put, { tradeDate: '20250110', quantity: '-1', proceeds: '120', ibCommission: '-1', openCloseIndicator: 'O' }),
+      opt(put, { tradeDate: '20250221', quantity: '1', tradePrice: '0', proceeds: '0', openCloseIndicator: 'C', notes: 'A;C', transactionType: 'BookTrade' }),
+      trade({ tradeDate: '20250221', quantity: '100', tradePrice: '40', proceeds: '-4000', notes: 'A;O', transactionType: 'BookTrade' }),
+      trade({ tradeDate: '20250505', quantity: '-100', tradePrice: '43', proceeds: '4300' })
+    ] })], 2025);
+    eq(lineCents(r, 'KAP', 19), 41900, 'Zeile 19');
+    eq(lineCents(r, 'KAP', 20), 30000, 'Zeile 20');
+    ok(!warning(r, /Aktien aus Optionsgeschäften/), 'Optionsgeschäft ist zugeordnet');
+  });
+
+  // Gekaufter Put mit Barausgleich: Kosten 300 € + 1 € = 301,00 €, Barausgleich 500 € → Gewinn 199,00 € (Rn. 30).
+  // Verkaufter Call mit Barausgleich: Prämie 250 € − 1 € = 249,00 €, gezahlter Barausgleich 400 € → Verlust 400,00 € (Rn. 26).
+  // Zeile 19: 199,00 + 249,00 − 400,00 = 48,00 €. Zeile 22: 400,00 €.
+  test('Barausgleich: Gewinn beim Käufer, Verlust beim Stillhalter', function () {
+    const r = run([statement({ trades: [
+      opt(put, { tradeDate: '20250110', quantity: '1', proceeds: '-300', ibCommission: '-1' }),
+      opt(put, { tradeDate: '20250321', quantity: '-1', proceeds: '500', notes: 'C;Ex', transactionType: 'BookTrade' }),
+      opt(call, { tradeDate: '20250110', quantity: '-1', proceeds: '250', ibCommission: '-1', openCloseIndicator: 'O' }),
+      opt(call, { tradeDate: '20250321', quantity: '1', proceeds: '-400', openCloseIndicator: 'C', notes: 'A;C', transactionType: 'BookTrade' })
+    ] })], 2025);
+    eq(lineCents(r, 'KAP', 19), 4800, 'Zeile 19');
+    eq(lineCents(r, 'KAP', 22), 40000, 'Zeile 22');
+  });
+
+  test('Option ohne Kaufdaten und Ausübung ohne Lieferung: offene Punkte, in keiner Summe', function () {
+    const sold = run([statement({ trades: [opt(call, { tradeDate: '20250210', quantity: '-1', proceeds: '350', openCloseIndicator: 'C' })] })], 2025);
+    eq(lineCents(sold, 'KAP', 19), 0, 'Zeile 19');
+    ok(warning(sold, /Optionsgeschäfte nicht vollständig berechnet/, 'offen'), 'offener Punkt fehlt');
+    eq(sold.complete, false);
+    const exercised = run([statement({ trades: [
+      opt(call, { tradeDate: '20250110', quantity: '1', proceeds: '-200' }),
+      opt(call, { tradeDate: '20250321', quantity: '-1', tradePrice: '0', proceeds: '0', notes: 'C;Ex', transactionType: 'BookTrade' })
+    ] })], 2025);
+    ok(warning(exercised, /Optionsgeschäfte nicht vollständig berechnet/, 'offen'), 'offener Punkt zur Lieferung fehlt');
+  });
+
   /* ---------- Einordnung und Sonderfälle ---------- */
 
   test('Wertpapier ohne Angabe der Art: erst nach Auswahl gerechnet', function () {
@@ -549,10 +690,10 @@
     ok(warning(r, /Dividenden deutscher Aktien/, 'offen'), 'Warnung fehlt');
   });
 
-  test('Optionen: offener Punkt. Währungstausch: nur Prüfpunkt', function () {
-    const opt = run([statement({ trades: [trade({ assetCategory: 'OPT', subCategory: 'C', conid: '9', isin: '', tradeDate: '20250610', quantity: '-1', proceeds: '150', openCloseIndicator: 'O' })] })], 2025);
-    ok(warning(opt, /Optionen werden noch nicht berechnet/, 'offen'), 'Warnung fehlt');
-    eq(opt.complete, false);
+  test('Futures: offener Punkt. Währungstausch: nur Prüfpunkt', function () {
+    const fut = run([statement({ trades: [trade({ assetCategory: 'FUT', subCategory: '', conid: '9', isin: '', tradeDate: '20250610', quantity: '-1', proceeds: '150', openCloseIndicator: 'O' })] })], 2025);
+    ok(warning(fut, /Futures werden noch nicht berechnet/, 'offen'), 'Warnung fehlt');
+    eq(fut.complete, false);
     const fx = run([statement({ trades: [trade({ assetCategory: 'CASH', subCategory: '', conid: '8', isin: '', symbol: 'EUR.USD', currency: 'USD', fxRateToBase: '0.9', tradeDate: '20250317', quantity: '2700', proceeds: '-3000' })] })], 2025);
     ok(warning(fx, /Währungstausch/, 'pruefen'), 'Prüfpunkt fehlt');
     eq(fx.complete, true);
@@ -619,7 +760,8 @@
   // MUSTER (deutsch): 348,75 − 301,25 = 47,50 € → Zeile 18.
   // Dividenden: ACME 7,50 USD × 0,95 = 7,13 und 1,50 USD × 0,90 = 1,35; ALPEN 40 CHF × 1,05 = 42,00.  Summe 50,48 €.
   // Zinsen: 3,21 + 2,00 USD × 0,85 = 1,70.  Summe 4,91 €.
-  // Zeile 19: 819,23 − 165,32 + 50,48 + 4,91 = 709,30 €.  Zeile 20: 819,23 + 47,50 = 866,73 €.
+  // Option ACME (verkaufter Call, am Jahresende offen): 150 USD − 1 USD = 149 USD × 0,88 = 131,12 € Stillhalterprämie.
+  // Zeile 19: 819,23 − 165,32 + 50,48 + 4,91 + 131,12 = 840,42 €.  Zeile 20: 819,23 + 47,50 = 866,73 €.
   // Quellensteuer: ACME einbehalten 1,07 + 0,21 = 1,28, Grenze 15 % von 8,48 = 1,27. ALPEN einbehalten 14,70, Grenze 6,30.  Zeile 41: 7,57 €.
   // WELT (Fonds): Kauf 2.401,25 € für 30 Stk.; Verkauf 10 Stk. 948,75 − 800,42 = 148,33 €; Ausschüttung 15,00 €.
   function sample(year, types, prices) {
@@ -629,7 +771,7 @@
   test('Beispieldaten 2025: Anlage KAP', function () {
     const r = sample(2025);
     eq(lineCents(r, 'KAP', 18), 4750, 'Zeile 18');
-    eq(lineCents(r, 'KAP', 19), 70930, 'Zeile 19');
+    eq(lineCents(r, 'KAP', 19), 84042, 'Zeile 19');
     eq(lineCents(r, 'KAP', 20), 86673, 'Zeile 20');
     eq(lineCents(r, 'KAP', 23), 16532, 'Zeile 23');
     eq(lineCents(r, 'KAP', 41), 757, 'Zeile 41');
@@ -643,7 +785,7 @@
 
   test('Beispieldaten 2025: offene Punkte und Abgleich', function () {
     const r = sample(2025);
-    ['Fondsart fehlt', 'Optionen werden noch nicht berechnet', 'Vorabpauschale nicht berechnet', 'Dividenden deutscher Aktien'].forEach(function (title) {
+    ['Fondsart fehlt', 'Vorabpauschale nicht berechnet', 'Dividenden deutscher Aktien'].forEach(function (title) {
       ok(warning(r, new RegExp(title), 'offen'), 'offener Punkt fehlt: ' + title);
     });
     ok(warning(r, /Quellensteuer prüfen/, 'pruefen'), 'Prüfpunkt Quellensteuer fehlt');
@@ -679,7 +821,7 @@
     const csv = K.report.toCsv(sample(2025));
     ok(csv.charCodeAt(0) === 0xFEFF, 'BOM fehlt');
     ok(csv.indexOf('"KAP";"19"') > 0, 'Zeile 19 fehlt');
-    ok(csv.indexOf('"709,30"') > 0, 'Summe Zeile 19 fehlt');
+    ok(csv.indexOf('"840,42"') > 0, 'Summe Zeile 19 fehlt');
     ok(csv.indexOf('"-165,32"') > 0, 'Einzelposten fehlt');
   });
 
