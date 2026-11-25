@@ -7,6 +7,7 @@
   const F = K.fifo;
 
   const COMPUTED_ASSETS = { STK: true, FUND: true };
+  const OPTION_ASSETS = { OPT: true };
   const ASSET_LABELS = {
     OPT: 'Optionen', FOP: 'Optionen auf Futures', FUT: 'Futures', CFD: 'CFDs', WAR: 'Optionsscheine',
     IOPT: 'Zertifikate und Hebelprodukte', BOND: 'Anleihen', BILL: 'Geldmarktpapiere', CRYPTO: 'Kryptowerte',
@@ -224,6 +225,134 @@
       };
     };
 
+    /* --- Optionen: Stillhalterprämien und Termingeschäfte (BMF-Schreiben vom 14.5.2025, Rn. 21 bis 34) --- */
+
+    const optionGroups = new Map();
+    model.trades.forEach(function (t) {
+      if (!OPTION_ASSETS[t.assetCategory]) return;
+      const key = t.account + '|' + t.conid;
+      if (!optionGroups.has(key)) optionGroups.set(key, { account: t.account, conid: t.conid, events: [] });
+      optionGroups.get(key).events.push(t);
+    });
+    const optionResults = [];
+    optionGroups.forEach(function (g) {
+      g.events.sort(F.compareEvents);
+      const res = K.optionen.run(g.events);
+      res.account = g.account;
+      res.conid = g.conid;
+      res.sec = secOf(g.conid);
+      res.label = res.sec.description || res.sec.symbol || ('conid ' + g.conid);
+      res.soldInYear = g.events.some(e => inYear(e.date));
+      optionResults.push(res);
+    });
+
+    // Lieferung des Basiswerts: das Aktiengeschäft zur Ausübung oder Zuteilung suchen (gleiches Depot, gleicher Tag, Basispreis, Stückzahl).
+    // Gekaufte Option (Rn. 22 und 29): Die Prämie erhöht die Anschaffungskosten oder mindert den Erlös des Basiswerts.
+    // Stillhalter (Rn. 26 und 33): Der Basiswert wird zum Basispreis gehandelt, die Prämie bleibt Stillhalterprämie.
+    const optionAdjust = new Map();   // Aktiengeschäft → Cent, um die sich sein Zahlungsfluss ändert
+    const deliveryFree = new Map();   // Aktiengeschäft → Stücke, die noch keiner Option zugeordnet sind
+    const deliveryTrades = model.trades.filter(t => COMPUTED_ASSETS[t.assetCategory] && F.DELIVERY_CODES.some(code => F.hasCode(t.notes, code)));
+    const freeQty = s => (deliveryFree.has(s) ? deliveryFree.get(s) : Math.abs(M.toQty(s.quantity)));
+    optionResults.forEach(function (res) {
+      res.items.forEach(function (it) {
+        if (it.kind !== 'ausuebung' && it.kind !== 'zuteilung') return;
+        const o = it.trade;
+        const premium = it.kind === 'ausuebung' ? it.costCents : 0;
+        // Gekaufter Call und verkaufter Put führen zum Kauf des Basiswerts, gekaufter Put und verkaufter Call zum Verkauf.
+        const buys = (o.putCall === 'C') === (it.kind === 'ausuebung');
+        const needed = Math.round(it.q * o.multiplier);
+        const parts = [];
+        let open = needed;
+        if (o.underlyingConid && (o.putCall === 'C' || o.putCall === 'P') && needed > 0) {
+          deliveryTrades.forEach(function (s) {
+            if (open === 0 || s.account !== o.account || s.conid !== o.underlyingConid || s.date !== o.date || (s.quantity > 0) !== buys) return;
+            if (o.strike > 0 && Math.abs(s.tradePrice - o.strike) > 1e-6) return;
+            const use = Math.min(freeQty(s), open);
+            if (use > 0) {
+              parts.push({ trade: s, q: use });
+              open -= use;
+            }
+          });
+        }
+        it.delivered = parts.length > 0 && open === 0;
+        if (!it.delivered) return;
+        it.underlying = secLabel(secOf(o.underlyingConid));
+        it.buys = buys;
+        let rest = premium;
+        parts.forEach(function (p, i) {
+          const cents = i === parts.length - 1 ? rest : Math.round(premium * p.q / needed);
+          rest -= cents;
+          deliveryFree.set(p.trade, freeQty(p.trade) - p.q);
+          optionAdjust.set(p.trade, (optionAdjust.get(p.trade) || 0) - cents);
+        });
+      });
+    });
+
+    const optionIncome = [];       // Stillhalterprämien und Gewinne des Jahres
+    const optionLosses = [];       // Verluste und gezahlte Rückkaufprämien des Jahres
+    const optionOpen = [];
+    const optionChecks = [];
+    const optionDeliveries = [];
+    const optionSums = { praemien: 0, rueckkaeufe: 0, gewinne: 0, verluste: 0 };
+    optionResults.forEach(function (res) {
+      res.items.forEach(function (it) {
+        if (!inYear(it.date)) return;
+        const base = { date: it.date, security: res.label };
+        const n = M.fmtQty(it.q) + ' Kontr.';
+        const since = word => (it.lotDate ? ' (' + word + ' ' + M.fmtDate(it.lotDate) + ')' : '');
+        const note = (list, art, text) => list.push(Object.assign({ art: art, text: text, cents: null }, base));
+        const result = () => 'Erlös ' + eur(it.proceedsCents) + ' − Anschaffungskosten ' + eur(it.costCents) + since('gekauft');
+        // Zahlung des Geschäfts in seiner Währung, damit sich der Euro-Betrag nachrechnen lässt.
+        const fee = -(it.trade.commission + it.trade.taxes);
+        const flow = M.fmtNumber(Math.abs(it.trade.proceeds), 2, true) + ' ' + it.trade.currency +
+          (fee ? ', Gebühren ' + M.fmtNumber(fee, 2, true) + ' ' + (it.trade.commissionCurrency || it.trade.currency) : '') +
+          (it.trade.currency === 'EUR' ? '' : ', Kurs ' + M.fmtNumber(it.trade.fx, 6)) +
+          (Math.abs(M.toQty(it.trade.quantity)) === it.q ? '' : ' (anteilig)');
+        let art = '';
+        let text = '';
+        if (it.kind === 'praemie') {
+          art = 'Stillhalterprämie';
+          text = 'Verkauf zur Eröffnung, ' + n + ': Prämie ' + flow;
+          optionSums.praemien += it.cents;
+        } else if (it.kind === 'glattstellung') {
+          art = 'Rückkauf';
+          text = 'Rückkauf (Glattstellung), ' + n + ': gezahlt ' + flow + since('eröffnet');
+          optionSums.rueckkaeufe += it.cents;
+          if (it.ohneEroeffnung) note(optionChecks, 'Rückkauf', 'Die Eröffnung steht nicht in den geladenen Dateien. Der Rückkauf ist als negative Einnahme enthalten. Die Prämie gehört in das Jahr, in dem sie zugeflossen ist.');
+        } else if (it.kind === 'barausgleichStillhalter') {
+          art = 'Barausgleich';
+          text = 'Zuteilung, ' + n + ': Barausgleich gezahlt ' + flow + since('eröffnet');
+        } else if (it.kind === 'verkauf') {
+          art = 'Optionsverkauf';
+          text = 'Verkauf, ' + n + ': ' + result();
+        } else if (it.kind === 'barausgleich') {
+          art = 'Barausgleich';
+          text = 'Ausübung mit Barausgleich, ' + n + ': ' + result();
+        } else if (it.kind === 'verfall') {
+          art = 'Verfall';
+          text = 'Verfall, ' + n + ': ' + result();
+        } else if (it.kind === 'ohneKauf') {
+          note(optionOpen, 'Option', 'Verkauf, Verfall oder Ausübung von ' + n + ': Der Kauf steht nicht in den geladenen Dateien.');
+        } else if (it.kind === 'ausuebung' && it.delivered) {
+          note(optionDeliveries, 'Ausübung', 'Ausübung, ' + n + ': Die gezahlte Prämie von ' + eur(it.costCents) + ' ist bei ' + it.underlying + ' eingerechnet, ' + (it.buys ? 'als Teil der Anschaffungskosten.' : 'sie mindert den Erlös.'));
+        } else if (it.kind === 'ausuebung') {
+          note(optionOpen, 'Ausübung', 'Ausübung, ' + n + ': Die Lieferung des Basiswerts ließ sich nicht zuordnen. Die gezahlte Prämie von ' + eur(it.costCents) + ' ist in keiner Summe enthalten.');
+        } else if (it.kind === 'zuteilung' && it.delivered) {
+          note(optionDeliveries, 'Zuteilung', 'Zuteilung, ' + n + ': ' + it.underlying + ' zum Basispreis ' + (it.buys ? 'gekauft' : 'verkauft') + '. Die Stillhalterprämie bleibt für sich steuerpflichtig.');
+        } else if (it.kind === 'zuteilung') {
+          note(optionOpen, 'Zuteilung', 'Zuteilung, ' + n + ': Die Lieferung des Basiswerts ließ sich nicht zuordnen. Ein gezahlter Barausgleich wäre in keiner Summe enthalten.');
+        }
+        if (!art) return;
+        if (it.kind !== 'praemie' && it.kind !== 'glattstellung') optionSums[it.cents >= 0 ? 'gewinne' : 'verluste'] += it.cents;
+        (it.cents >= 0 ? optionIncome : optionLosses).push(Object.assign({ art: art, text: text, cents: it.cents }, base));
+      });
+      if (!res.soldInYear) return;
+      const hint = text => optionChecks.push({ date: '', security: res.label, art: 'Hinweis', text: text, cents: null });
+      if (res.flags.noIndicator) hint('Das Kennzeichen „Open/Close“ fehlt. Verkäufe ohne Bestand sind als Eröffnung einer Stillhalterposition gewertet.');
+      if (res.flags.cancellation) hint('Es gab Storno- oder Korrekturbuchungen. Bitte die Ergebnisse mit dem Kontoauszug vergleichen.');
+      if (res.flags.commissionCurrency) hint('Die Gebühr wurde in einer anderen Währung als das Geschäft berechnet und näherungsweise umgerechnet.');
+    });
+
     /* --- FIFO je Depot und Wertpapier, über alle geladenen Jahre --- */
 
     const groups = new Map();
@@ -247,7 +376,7 @@
         return;
       }
       g.events.sort(F.compareEvents);
-      const res = F.run(g.events);
+      const res = F.run(g.events, optionAdjust);
       res.events = g.events;
       res.account = g.account;
       res.conid = g.conid;
@@ -485,7 +614,7 @@
 
     results.forEach(function (res) {
       if (res.group !== 'fonds' && res.group !== 'fonds_offen') return;
-      const atEnd = F.run(res.events.filter(e => e.date <= vorabEnd));
+      const atEnd = F.run(res.events.filter(e => e.date <= vorabEnd), optionAdjust);
       if (!atEnd.lots.length) return;
       const base = { date: '', security: secLabel(res.sec), art: 'Vorabpauschale ' + vorabYear };
       const basis = vorabBasis(res, vorabYear);
@@ -625,8 +754,12 @@
       kapLines.push(line('KAP', kap.inland, 'Inländische Kapitalerträge ohne Steuerabzug (Saldo)', inlandItems, 'Verkäufe deutscher Aktien im Auslandsdepot.'));
     }
     kapLines.push(line('KAP', kap.ausland, 'Ausländische Kapitalerträge (Saldo aus Erträgen, Gewinnen und Verlusten)',
-      dividends.concat(substitutePayments, interest, stock.gainsAusland, stock.lossesAusland)));
+      dividends.concat(substitutePayments, interest, stock.gainsAusland, stock.lossesAusland, optionIncome, optionLosses)));
     kapLines.push(line('KAP', kap.aktiengewinne, both + 'Gewinne aus Aktienverkäufen', stock.gainsAusland.concat(stock.gainsInland)));
+    if (optionLosses.length) {
+      kapLines.push(line('KAP', kap.sonstigeVerluste, both + 'Verluste ohne Verluste aus Aktienverkäufen', negate(optionLosses),
+        'Als positiver Betrag einzutragen. Enthält Verluste aus Optionen und gezahlte Prämien für Rückkäufe.'));
+    }
     kapLines.push(line('KAP', kap.aktienverluste, both + 'Verluste aus Aktienverkäufen', negate(stock.lossesAusland.concat(stock.lossesInland)), 'Als positiver Betrag einzutragen.'));
     kapLines.push(line('KAP', kap.auslaendischeSteuern, 'Anrechenbare, noch nicht angerechnete ausländische Steuern', creditItems));
 
@@ -701,7 +834,7 @@
     const unsupportedByAsset = {};
     const currencyTrades = [];
     model.trades.forEach(function (t) {
-      if (COMPUTED_ASSETS[t.assetCategory] || !inYear(t.date)) return;
+      if (COMPUTED_ASSETS[t.assetCategory] || OPTION_ASSETS[t.assetCategory] || !inYear(t.date)) return;
       if (t.assetCategory === 'CASH') currencyTrades.push(tradeItem(t));
       else (unsupportedByAsset[t.assetCategory] = unsupportedByAsset[t.assetCategory] || []).push(tradeItem(t));
     });
@@ -730,6 +863,10 @@
         vorabOpen);
     }
 
+    if (optionOpen.length) {
+      warn('offen', 'Optionsgeschäfte nicht vollständig berechnet', 'Diese Vorgänge ließen sich nicht sicher rechnen. Sie sind in keiner Summe enthalten.', optionOpen);
+    }
+
     if (germanDividends.length || germanWithholding.length) {
       warn('offen', 'Dividenden deutscher Aktien nicht enthalten',
         'Bei Dividenden deutscher Aktien wird deutsche Kapitalertragsteuer einbehalten. Sie gehören nicht in Zeile ' + kap.ausland + ', die Steuer nicht in Zeile ' + kap.auslaendischeSteuern + '. Diese Buchungen sind in keiner Summe enthalten.',
@@ -745,7 +882,7 @@
     model.statements.forEach(function (st) {
       if (!st.openPositions || !st.to) return;
       const reported = new Map(st.openPositions.map(p => [p.conid, M.toQty(p.position)]));
-      results.forEach(function (res) {
+      results.concat(optionResults).forEach(function (res) {
         if (res.account !== st.accountId) return;
         const ours = F.positionAt(res.timeline, st.to);
         const theirs = reported.get(res.conid) || 0;
@@ -782,6 +919,15 @@
     if (fundWithholding.length) {
       warn('pruefen', 'Quellensteuer auf Fondsausschüttungen', 'Diese Quellensteuer ist in Zeile ' + kap.auslaendischeSteuern + ' nicht enthalten. Ob und in welcher Höhe sie anrechenbar ist, bitte gesondert klären.', fundWithholding);
     }
+    const hasOptions = optionIncome.length + optionLosses.length > 0;
+    if (optionChecks.length) {
+      warn('pruefen', 'Optionen prüfen', 'Diese Optionsgeschäfte sind mit einer Annahme gerechnet.', optionChecks);
+    }
+    if (hasOptions && year < 2025) {
+      // Am Vordruck 2024 abgeglichen: Zeile 21 und Zeile 24 gab es dort noch, Zeile 19 galt ohne die Beträge der Zeile 24.
+      warn('pruefen', 'Optionen: eigene Zeilen in älteren Vordrucken',
+        'Der Bericht ordnet Optionen nach dem Vordruck 2025 zu. Im Vordruck 2024 gab es dafür eigene Zeilen: Zeile 21 für Stillhalterprämien und Gewinne aus Termingeschäften und Zeile 24 für Verluste aus Termingeschäften, die dort nicht in Zeile ' + kap.ausland + ' gehörten. Die Beträge dafür stehen unter „Optionen im Überblick“. Bitte mit dem Vordruck ' + Y + ' abgleichen.');
+    }
     if (vorabChecks.length) {
       warn('pruefen', 'Vorabpauschale prüfen', 'Die Vorabpauschale für ' + vorabYear + ' ist bei diesen Fonds mit einer Annahme gerechnet.', vorabChecks);
     }
@@ -813,7 +959,7 @@
       const hit = results.filter(r => r.flags[flag] && r.soldInYear);
       if (hit.length) warn('pruefen', title, text, hit.map(r => ({ date: '', security: secLabel(r.sec), art: 'Hinweis', text: 'betrifft Verkäufe in ' + Y, cents: null })));
     };
-    flagged('optionDelivery', 'Aktien aus Optionsgeschäften', 'Diese Aktien wurden über die Ausübung oder Zuteilung einer Option ge- oder verkauft. Die Optionsprämie ist in den Anschaffungskosten nicht berücksichtigt.');
+    flagged('optionDelivery', 'Aktien aus Optionsgeschäften', 'Diese Wertpapiere wurden über die Ausübung oder Zuteilung einer Option ge- oder verkauft, das Optionsgeschäft dazu ließ sich in den geladenen Dateien aber nicht zuordnen. Eine gezahlte Optionsprämie ist dann weder in den Anschaffungskosten noch im Erlös berücksichtigt.');
     flagged('cancellation', 'Stornierte oder korrigierte Geschäfte', 'Bei diesen Wertpapieren gab es Storno- oder Korrekturbuchungen. Bitte die Ergebnisse mit dem Kontoauszug vergleichen.');
     flagged('commissionCurrency', 'Gebühr in dritter Währung', 'Die Gebühr wurde in einer anderen Währung als das Geschäft berechnet und näherungsweise umgerechnet.');
     flagged('splitRounding', 'Rundung nach Aktiensplit', 'Nach einem Split sind rechnerisch Bruchstücke entstanden. Bitte die Ergebnisse prüfen.');
@@ -839,6 +985,14 @@
       warn('info', 'Nicht abziehbar',
         'Sollzinsen (' + eur(-sum(interestPaid)) + ') und Gebühren (' + eur(-sum(fees)) + ') mindern die Kapitalerträge nicht und sind nicht berücksichtigt.',
         interestPaid.concat(fees).sort(byDate));
+    }
+    if (hasOptions) {
+      warn('info', 'Optionen im Überblick',
+        'Stillhalterprämien ' + eur(optionSums.praemien) + ', Rückkäufe (Glattstellung) ' + eur(optionSums.rueckkaeufe) + ', Gewinne aus gekauften Optionen und Barausgleich ' + eur(optionSums.gewinne) + ', Verluste ' + eur(optionSums.verluste) +
+        '. Alles ist in Zeile ' + kap.ausland + ' enthalten, Verluste und Rückkäufe zusätzlich in Zeile ' + kap.sonstigeVerluste + '. Stillhalterprämien zählen im Jahr des Zuflusses, Rückkäufe im Jahr der Zahlung.');
+    }
+    if (optionDeliveries.length) {
+      warn('info', 'Ausgeübte und zugeteilte Optionen', 'Wird der Basiswert geliefert, entsteht bei der Option kein eigenes Ergebnis.', optionDeliveries);
     }
     if (matched && !mismatches.length) {
       warn('info', 'Bestandsabgleich stimmt', 'Der nachgerechnete Bestand stimmt in ' + matched + ' Fällen mit dem Bestand im Export überein.');
