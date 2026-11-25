@@ -343,7 +343,7 @@
     eq(lineCents(r, 'KAP-INV', 14), 8000, 'Zeile 14');
     ok(!warning(r, /Fondsart fehlt/), 'Warnung sollte weg sein');
     ok(warning(r, /Vorabpauschale nicht berechnet/, 'offen'), 'Vorabpauschale muss offen bleiben');
-    ok(warning(r, /ohne Abzug früherer Vorabpauschalen/, 'pruefen'), 'Prüfpunkt fehlt');
+    ok(warning(r, /Abzug früherer Vorabpauschalen unvollständig/, 'pruefen'), 'Prüfpunkt zum fehlenden Abzug fehlt');
   });
 
   test('Mischfonds: Anlage KAP-INV Zeilen 5 und 17', function () {
@@ -445,6 +445,77 @@
     ok(warning(r, /Vorabpauschale nicht berechnet/, 'offen'), 'offener Punkt fehlt');
   });
 
+  /* ---------- Abzug früherer Vorabpauschalen beim Verkauf ---------- */
+
+  // 10 Anteile, gekauft 01.06.2023 für 1.000 €, verkauft 10.03.2025 für 1.200 €: Gewinn vor Abzug 200,00 €.
+  // 2023: Preis zu Jahresbeginn eingetragen 90,00 → Basisertrag 1,6065 → 1,61. Mehrbetrag 100,00 − 90,00 = 10,00.
+  //   Kauf im Juni: 5 volle Monate davor, Kürzung 1,61 × 5/12 = 0,6708 → 0,67. Je Anteil 0,94 → 9,40 €.
+  // 2024: Kurse laut Export 100,00 und 110,00 → je Anteil 1,60 → 16,00 €.
+  // Zeile 53: 9,40 + 16,00 = 25,40 €. Zeile 14: 200,00 − 25,40 = 174,60 €. Zeile 9 (Vorabpauschale 2024): 16,00 €.
+  const soldFund = heldFund.slice(0, 2).concat([
+    statement({ year: 2025, trades: [trade(Object.assign({ tradeDate: '20250310', quantity: '-10', proceeds: '1200' }, fund))] })
+  ]);
+
+  test('Fondsverkauf: Vorabpauschalen der Haltezeit mindern den Gewinn', function () {
+    const r = run(soldFund, 2025, { IE0000000005: 'aktienfonds' }, { IE0000000005: { 2023: { beginn: '90,00' } } });
+    eq(lineCents(r, 'KAP-INV', 14), 17460, 'Zeile 14');
+    eq(lineCents(r, 'KAP-INV', 9), 1600, 'Zeile 9');
+    ok(warning(r, /Abzug früherer Vorabpauschalen prüfen/, 'pruefen'), 'Prüfpunkt zum Abzug fehlt');
+    ok(!warning(r, /Abzug früherer Vorabpauschalen unvollständig/), 'Abzug ist vollständig');
+    eq(r.vorab.funds.map(f => f.year + ':' + f.abzug).join(' '), '2023:940 2024:1600', 'Preistabelle je Jahr');
+  });
+
+  // Ohne den Preis zu Jahresbeginn 2023 lässt sich nur 2024 abziehen: 200,00 − 16,00 = 184,00 €.
+  test('Fondsverkauf: fehlt ein Preis, wird das Jahr nicht abgezogen und gemeldet', function () {
+    const r = run(soldFund, 2025, { IE0000000005: 'aktienfonds' });
+    eq(lineCents(r, 'KAP-INV', 14), 18400, 'Zeile 14');
+    const open = warning(r, /Abzug früherer Vorabpauschalen unvollständig/, 'pruefen');
+    ok(open && /2023 \(Preise fehlen\)/.test(open.items[0].text), 'Hinweis auf 2023 fehlt');
+  });
+
+  // 2021 und 2022 war der Basiszins negativ: keine Vorabpauschale, also auch kein Abzug. Gewinn 1.100 − 1.000 = 100,00 €.
+  test('Fondsverkauf: Jahre mit negativem Basiszins brauchen keine Preise', function () {
+    const r = run([
+      statement({ year: 2021, trades: [trade(Object.assign({ tradeDate: '20210310', quantity: '10', proceeds: '-1000' }, fund))] }),
+      statement({ year: 2022 }),
+      statement({ year: 2023, trades: [trade(Object.assign({ tradeDate: '20230510', quantity: '-10', proceeds: '1100' }, fund))] })
+    ], 2023, { IE0000000005: 'aktienfonds' });
+    eq(lineCents(r, 'KAP-INV', 14), 10000, 'Zeile 14');
+    ok(!warning(r, /Vorabpauschale/), 'keine Meldung zur Vorabpauschale');
+    eq(r.vorab.funds.length, 0, 'keine Preise verlangt');
+  });
+
+  // Zwei Käufe: 10 Anteile am 15.01.2023 für 1.000 €, 10 Anteile am 20.08.2024 für 1.050 €. Verkauf 15 Anteile am 10.02.2025 für 1.800 €.
+  // FIFO: 10 Anteile aus 2023 (Kosten 1.000 €) und 5 aus 2024 (Kosten 525 €). Gewinn vor Abzug 1.800 − 1.525 = 275,00 €.
+  // 2023 (Preise 98,00 und 104,00): Basisertrag 98,00 × 1,785 % = 1,7493 → 1,75. 10 Anteile → 17,50 €.
+  // 2024 (Preise 104,00 und 110,00): Basisertrag 1,66712 → 1,67. Anteile aus 2023: 10 × 1,67 = 16,70 €.
+  //   Anteile aus August 2024: 7 volle Monate davor, Kürzung 1,67 × 7/12 = 0,9742 → 0,97, je Anteil 0,70. 5 verkaufte Anteile → 3,50 €.
+  // Zeile 53: 17,50 + 16,70 + 3,50 = 37,70 €. Zeile 14: 275,00 − 37,70 = 237,30 €.
+  // Zeile 9 (Vorabpauschale 2024 für alle 20 Anteile): 16,70 + 10 × 0,70 = 23,70 €.
+  test('Fondsverkauf mit zwei Käufen: Abzug je verkauftem Anteil nach FIFO', function () {
+    const r = run([
+      statement({ year: 2023, trades: [trade(Object.assign({ tradeDate: '20230115', quantity: '10', proceeds: '-1000' }, fund))] }),
+      statement({ year: 2024, trades: [trade(Object.assign({ tradeDate: '20240820', quantity: '10', proceeds: '-1050' }, fund))] }),
+      statement({ year: 2025, trades: [trade(Object.assign({ tradeDate: '20250210', quantity: '-15', proceeds: '1800' }, fund))] })
+    ], 2025, { IE0000000005: 'aktienfonds' }, { IE0000000005: { 2023: { beginn: '98,00', ende: '104,00' }, 2024: { beginn: '104,00', ende: '110,00' } } });
+    eq(lineCents(r, 'KAP-INV', 14), 23730, 'Zeile 14');
+    eq(lineCents(r, 'KAP-INV', 9), 2370, 'Zeile 9');
+  });
+
+  // 10 Anteile für 1.000 €, Split 2:1 im Juni 2024, Verkauf 20 Anteile für 1.300 €: Gewinn 300,00 €.
+  // Die Preise je Anteil vor dem Split passen nicht zur Stückzahl danach, deshalb wird nichts abgezogen.
+  test('Fondsverkauf nach Split: kein Abzug, aber Meldung', function () {
+    const r = run([
+      statement({ year: 2023, trades: [trade(Object.assign({ tradeDate: '20230601', quantity: '10', proceeds: '-1000' }, fund))] }),
+      statement({ year: 2024, actions: [action(Object.assign({ quantity: '10' }, fund))] }),
+      statement({ year: 2025, trades: [trade(Object.assign({ tradeDate: '20250310', quantity: '-20', proceeds: '1300' }, fund))] })
+    ], 2025, { IE0000000005: 'aktienfonds' }, { IE0000000005: { 2023: { beginn: '90,00', ende: '100,00' } } });
+    eq(lineCents(r, 'KAP-INV', 14), 30000, 'Zeile 14');
+    const open = warning(r, /Abzug früherer Vorabpauschalen unvollständig/, 'pruefen');
+    ok(open && /Kapitalmaßnahme/.test(open.items[0].text), 'Hinweis auf die Kapitalmaßnahme fehlt');
+    ok(!warning(r, /Abzug früherer Vorabpauschalen prüfen/), 'nichts abgezogen');
+  });
+
   /* ---------- Einordnung und Sonderfälle ---------- */
 
   test('Wertpapier ohne Angabe der Art: erst nach Auswahl gerechnet', function () {
@@ -533,6 +604,9 @@
     eq(K.forms.basisertragProzent(2024), 1.603, 'Basisertrag 2024 laut Vordruck 2025');
     eq(K.forms.basisertragProzent(2023), 1.785, 'Basisertrag 2023 laut Vordruck 2024');
     eq(K.forms.basisertragProzent(2026), null, 'kein Prozentsatz für 2026');
+    // 2019 und 2020 laut Vordruck 2020 und 2021; 2021 und 2022 ohne Vorabpauschale; 2018 aus dem Basiszins 0,87 % (nicht im Vordruck).
+    eq([2018, 2019, 2020, 2021, 2022].map(y => K.forms.basisertragProzent(y)).join(' '), '0.609 0.364 0.049 0 0', 'Basisertrag 2018 bis 2022');
+    eq(f.kapinv.verkaufRechnung.vorabpauschalen + ',' + f.kapinv.verkaufRechnung.ergebnis, '53,54', 'Rechenweg Seite 3');
     eq(funds.map(t => f.kapinv.veraeusserung[t]).join(','), '14,17,20,23,26', 'KAP-INV Verkäufe');
   });
 
@@ -585,6 +659,8 @@
   test('Beispieldaten 2025: Vorabpauschale nach Eingabe des Preises zu Jahresbeginn', function () {
     const r = sample(2025, { IE0000002001: 'aktienfonds' }, { IE0000002001: { 2024: { beginn: '78,00' } } });
     eq(lineCents(r, 'KAP-INV', 9), 2820, 'Zeile 9');
+    // Verkauf von 10 Anteilen im Jahr 2025: 148,33 − 10 × 0,94 = 138,93 €.
+    eq(lineCents(r, 'KAP-INV', 14), 13893, 'Zeile 14 nach Abzug der Vorabpauschale 2024');
     ok(!warning(r, /Vorabpauschale nicht berechnet/), 'nicht mehr offen');
     const row = r.vorab.funds[0];
     eq(row.exportEnde, 8800, 'Kurs Ende 2024 aus dem Export');
