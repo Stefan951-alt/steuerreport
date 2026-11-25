@@ -415,6 +415,17 @@
     ok(!warning(run([statement({})], 2025), /Zeilennummern/), 'für 2025 kein Prüfpunkt');
   });
 
+  // Abgeglichen mit den amtlichen Vordrucken 2025 im Formular-Management-System der Bundesfinanzverwaltung, Stand 25.11.2026.
+  test('Zeilennummern 2025 entsprechen dem amtlichen Vordruck', function () {
+    const f = K.forms.forYear(2025);
+    const funds = ['aktienfonds', 'mischfonds', 'immobilienfonds', 'auslandsimmobilienfonds', 'sonstigerfonds'];
+    eq(f.exact, true, 'eigene Nummern für 2025');
+    eq([f.kap.inland, f.kap.ausland, f.kap.aktiengewinne, f.kap.sonstigeVerluste, f.kap.aktienverluste, f.kap.auslaendischeSteuern].join(','), '18,19,20,22,23,41', 'Anlage KAP');
+    eq(funds.map(t => f.kapinv.ausschuettung[t]).join(','), '4,5,6,7,8', 'KAP-INV Ausschüttungen');
+    eq(f.kapinv.vorabpauschale.von + '-' + f.kapinv.vorabpauschale.bis, '9-13', 'KAP-INV Vorabpauschalen');
+    eq(funds.map(t => f.kapinv.veraeusserung[t]).join(','), '14,17,20,23,26', 'KAP-INV Verkäufe');
+  });
+
   /* ---------- Beispieldaten von Anfang bis Ende ---------- */
 
   // ACME: Käufe 2.001 USD × 0,92 = 1.840,92 € (20 Stk.) und 1.201 USD × 0,93 = 1.116,93 € (10 Stk.); Split 2:1 → 40 + 20 Stk.
