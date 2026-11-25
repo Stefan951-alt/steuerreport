@@ -86,10 +86,10 @@
       (d.positions ? '<OpenPositions>' + d.positions.join('') + '</OpenPositions>' : '') +
       '</FlexStatement></FlexStatements></FlexQueryResponse>';
   }
-  function run(xmls, year, types) {
+  function run(xmls, year, types, prices) {
     const statements = [];
     xmls.forEach((xml, i) => K.flex.parse(xml, 'datei' + (i + 1) + '.xml', i + 1).forEach(s => statements.push(s)));
-    return K.report.buildReport(K.report.buildModel(statements), types || {}, year);
+    return K.report.buildReport(K.report.buildModel(statements), types || {}, year, prices || {});
   }
   function lineCents(report, form, number) {
     let found;
@@ -108,6 +108,17 @@
     eq(M.toCents(570.475), 57048);
     eq(M.toCents(0), 0);
     eq(M.toCents(-0.001), 0);
+  });
+
+  test('Eingabe von Euro-Beträgen: Komma und Punkt, Mehrdeutiges wird abgelehnt', function () {
+    eq(M.parseEuro('88,50'), 8850);
+    eq(M.parseEuro('1.234,56'), 123456);
+    eq(M.parseEuro('88.5'), 8850);
+    eq(M.parseEuro(' 100 € '), 10000);
+    eq(M.parseEuro(''), null);
+    ok(Number.isNaN(M.parseEuro('1.234')), '1.234 ist mehrdeutig');
+    ok(Number.isNaN(M.parseEuro('abc')), 'Text ist kein Betrag');
+    ok(Number.isNaN(M.parseEuro('-5')), 'negative Preise gibt es nicht');
   });
 
   test('Formatierung deutscher Beträge', function () {
@@ -341,6 +352,99 @@
     eq(lineCents(r, 'KAP-INV', 17), 8000);
   });
 
+  /* ---------- Vorabpauschale ---------- */
+
+  // Je Anteil wie im Vordruck (Zeilen 33 bis 43), Basisertrag 2024 = 1,603 % des Preises zu Jahresbeginn.
+  // Preis 100,00 → Basisertrag 1,603 → 1,60. Mehrbetrag = letzter Preis − erster Preis + Ausschüttungen.
+  test('Vorabpauschale je Anteil: Basisertrag, Mehrbetrag, Ausschüttungen, Kürzung', function () {
+    const calc = (ende, ausschuettung, monate) => K.vorab.jeAnteil({ beginnCents: 10000, endeCents: ende, ausschuettungCents: ausschuettung, prozent: 1.603, monate: monate }).ergebnis;
+    eq(calc(11000, 0, 0), 160, 'Basisertrag ist niedriger als der Mehrbetrag von 10,00');
+    eq(calc(10050, 0, 0), 50, 'Mehrbetrag 0,50 begrenzt');
+    eq(calc(9500, 0, 0), 0, 'Kursverlust: Mehrbetrag negativ');
+    eq(calc(11000, 100, 0), 60, '1,60 − 1,00 Ausschüttung');
+    eq(calc(11000, 200, 0), 0, 'Ausschüttung über dem Basisertrag');
+    // Kauf im März: 2 volle Monate davor. Kürzung 1,60 × 2/12 = 0,2667 → 0,27. Ergebnis 1,33.
+    eq(calc(11000, 0, 2), 133, 'Kürzung um 2/12');
+    // 2023: 1,785 %. Preis 80,00 → 1,428 → 1,43.
+    eq(K.vorab.jeAnteil({ beginnCents: 8000, endeCents: 9000, ausschuettungCents: 0, prozent: 1.785, monate: 0 }).ergebnis, 143, 'Prozentsatz 2023');
+  });
+
+  // 10 Anteile, gekauft 2023. Kurs laut IBKR Ende 2023: 100,00, Ende 2024: 110,00.
+  // Vorabpauschale 2024 je Anteil 1,60 → 16,00 €. Sie gehört ins Steuerjahr 2025, Zeile 9 (Aktienfonds).
+  const heldFund = [
+    statement({ year: 2023, trades: [trade(Object.assign({ tradeDate: '20230601', quantity: '10', proceeds: '-1000' }, fund))],
+      positions: [position(Object.assign({ position: '10', markPrice: '100', currency: 'EUR' }, fund))] }),
+    statement({ year: 2024, positions: [position(Object.assign({ position: '10', markPrice: '110', currency: 'EUR' }, fund))] }),
+    statement({ year: 2025 })
+  ];
+
+  test('Vorabpauschale aus den Kursen des Exports: Zeile 9 und Prüfpunkt zum Preis', function () {
+    const r = run(heldFund, 2025, { IE0000000005: 'aktienfonds' });
+    eq(lineCents(r, 'KAP-INV', 9), 1600, 'Zeile 9');
+    ok(warning(r, /Vorabpauschale prüfen/, 'pruefen'), 'Prüfpunkt zum Preis zu Jahresbeginn fehlt');
+    ok(!warning(r, /Vorabpauschale nicht berechnet/), 'darf nicht offen sein');
+    eq(r.complete, true, 'vollständig');
+  });
+
+  // Eingetragener Preis zu Jahresbeginn 99,00 → Basisertrag 1,58697 → 1,59 → 15,90 €.
+  test('Vorabpauschale mit eingetragenem Preis: kein Prüfpunkt mehr', function () {
+    const r = run(heldFund, 2025, { IE0000000005: 'aktienfonds' }, { IE0000000005: { 2024: { beginn: '99,00' } } });
+    eq(lineCents(r, 'KAP-INV', 9), 1590, 'Zeile 9');
+    ok(!warning(r, /Vorabpauschale prüfen/), 'kein Prüfpunkt');
+  });
+
+  test('Vorabpauschale im Vorjahr gehört nicht ins selbe Jahr und nicht doppelt', function () {
+    // Steuerjahr 2024 bräuchte die Vorabpauschale 2023: dafür fehlt der Kurs von Ende 2022.
+    const r = run(heldFund, 2024, { IE0000000005: 'aktienfonds' });
+    eq(lineCents(r, 'KAP-INV', 9), undefined, 'Zeile 9 im Steuerjahr 2024');
+    ok(warning(r, /Vorabpauschale nicht berechnet/, 'offen'), 'offener Punkt fehlt');
+  });
+
+  // 20 Anteile, gekauft im März 2024. Ausschüttung 0,50 je Anteil. Preise eingetragen: 100,00 und 110,00.
+  // Basisertrag 1,60, Mehrbetrag 10,00 + 0,50 = 10,50, niedriger 1,60, abzüglich 0,50 = 1,10.
+  // Kürzung 1,10 × 2/12 = 0,1833 → 0,18. Je Anteil 0,92 → 18,40 €.
+  test('Vorabpauschale bei Kauf im Jahr: Kürzung um Zwölftel und Abzug der Ausschüttung', function () {
+    const r = run([
+      statement({ year: 2024, trades: [trade(Object.assign({ tradeDate: '20240315', quantity: '20', proceeds: '-2000' }, fund))],
+        cash: [cash(Object.assign({ settleDate: '20240910', amount: '10', description: 'ETF(IE0000000005) CASH DIVIDEND EUR 0.50 PER SHARE (Ordinary Dividend)' }, fund))] }),
+      statement({ year: 2025 })
+    ], 2025, { IE0000000005: 'aktienfonds' }, { IE0000000005: { 2024: { beginn: '100,00', ende: '110,00' } } });
+    eq(lineCents(r, 'KAP-INV', 9), 1840, 'Zeile 9');
+    ok(warning(r, /Vorabpauschale prüfen/, 'pruefen'), 'Hinweis auf Ausschüttungen vor dem Kauf fehlt');
+  });
+
+  test('Vorabpauschale: bis zum Jahresende verkaufte Anteile zählen nicht', function () {
+    const r = run([
+      statement({ year: 2023, trades: [trade(Object.assign({ tradeDate: '20230601', quantity: '10', proceeds: '-1000' }, fund))] }),
+      statement({ year: 2024, trades: [trade(Object.assign({ tradeDate: '20241115', quantity: '-10', proceeds: '1100' }, fund))] }),
+      statement({ year: 2025 })
+    ], 2025, { IE0000000005: 'aktienfonds' }, { IE0000000005: { 2024: { beginn: '100,00', ende: '110,00' } } });
+    eq(lineCents(r, 'KAP-INV', 9), undefined, 'Zeile 9');
+    ok(!warning(r, /Vorabpauschale/), 'keine Meldung zur Vorabpauschale');
+  });
+
+  // Fonds in USD: Kurs 100 USD × 0,90 = 90,00 € Ende 2023, 120 USD × 0,95 = 114,00 € Ende 2024.
+  // Basisertrag 90,00 × 1,603 % = 1,4427 → 1,44. Mehrbetrag 24,00. 10 Anteile → 14,40 €.
+  test('Vorabpauschale: Kurse in Fremdwährung werden mit dem Kurs des Stichtags umgerechnet', function () {
+    const usd = Object.assign({}, fund, { currency: 'USD' });
+    const r = run([
+      statement({ year: 2023, trades: [trade(Object.assign({ fxRateToBase: '0.9', tradeDate: '20230601', quantity: '10', proceeds: '-1000' }, usd))],
+        positions: [position(Object.assign({ position: '10', markPrice: '100', fxRateToBase: '0.9' }, usd))] }),
+      statement({ year: 2024, positions: [position(Object.assign({ position: '10', markPrice: '120', fxRateToBase: '0.95' }, usd))] }),
+      statement({ year: 2025 })
+    ], 2025, { IE0000000005: 'aktienfonds' });
+    eq(lineCents(r, 'KAP-INV', 9), 1440, 'Zeile 9');
+  });
+
+  test('Vorabpauschale: Jahr ohne hinterlegten Prozentsatz bleibt offen', function () {
+    const r = run([
+      statement({ year: 2026, trades: [trade(Object.assign({ tradeDate: '20260105', quantity: '10', proceeds: '-1000' }, fund))] }),
+      statement({ year: 2027 })
+    ], 2027, { IE0000000005: 'aktienfonds' }, { IE0000000005: { 2026: { beginn: '100,00', ende: '110,00' } } });
+    eq(lineCents(r, 'KAP-INV', 9), undefined, 'Zeile 9');
+    ok(warning(r, /Vorabpauschale nicht berechnet/, 'offen'), 'offener Punkt fehlt');
+  });
+
   /* ---------- Einordnung und Sonderfälle ---------- */
 
   test('Wertpapier ohne Angabe der Art: erst nach Auswahl gerechnet', function () {
@@ -423,6 +527,12 @@
     eq([f.kap.inland, f.kap.ausland, f.kap.aktiengewinne, f.kap.sonstigeVerluste, f.kap.aktienverluste, f.kap.auslaendischeSteuern].join(','), '18,19,20,22,23,41', 'Anlage KAP');
     eq(funds.map(t => f.kapinv.ausschuettung[t]).join(','), '4,5,6,7,8', 'KAP-INV Ausschüttungen');
     eq(f.kapinv.vorabpauschale.von + '-' + f.kapinv.vorabpauschale.bis, '9-13', 'KAP-INV Vorabpauschalen');
+    eq(funds.map(t => f.kapinv.vorabpauschaleJeArt[t]).join(','), '9,10,11,12,13', 'KAP-INV Vorabpauschalen je Fondsart');
+    const v = f.kapinv.vorabRechnung;
+    eq([v.preisBeginn, v.basisertrag, v.letzterPreis, v.ausschuettungen, v.mehrbetrag, v.niedrigerer, v.zwischen, v.kuerzung, v.jeAnteil, v.anteile, v.ergebnis].join(','), '33,34,35,37,38,39,41,42,43,44,45', 'Rechenweg Seite 2');
+    eq(K.forms.basisertragProzent(2024), 1.603, 'Basisertrag 2024 laut Vordruck 2025');
+    eq(K.forms.basisertragProzent(2023), 1.785, 'Basisertrag 2023 laut Vordruck 2024');
+    eq(K.forms.basisertragProzent(2026), null, 'kein Prozentsatz für 2026');
     eq(funds.map(t => f.kapinv.veraeusserung[t]).join(','), '14,17,20,23,26', 'KAP-INV Verkäufe');
   });
 
@@ -438,8 +548,8 @@
   // Zeile 19: 819,23 − 165,32 + 50,48 + 4,91 = 709,30 €.  Zeile 20: 819,23 + 47,50 = 866,73 €.
   // Quellensteuer: ACME einbehalten 1,07 + 0,21 = 1,28, Grenze 15 % von 8,48 = 1,27. ALPEN einbehalten 14,70, Grenze 6,30.  Zeile 41: 7,57 €.
   // WELT (Fonds): Kauf 2.401,25 € für 30 Stk.; Verkauf 10 Stk. 948,75 − 800,42 = 148,33 €; Ausschüttung 15,00 €.
-  function sample(year, types) {
-    return run(K.samples.map(s => s.xml), year, types);
+  function sample(year, types, prices) {
+    return run(K.samples.map(s => s.xml), year, types, prices);
   }
 
   test('Beispieldaten 2025: Anlage KAP', function () {
@@ -468,6 +578,17 @@
     ok(!warning(r, /Bestand weicht/), 'Bestand darf nicht abweichen');
     ok(!warning(r, /Kaufdaten fehlen/), 'Kaufdaten sind vollständig');
     eq(r.complete, false);
+  });
+
+  // WELT: 30 Anteile, gekauft im April 2024 (3 volle Monate davor). Preis zu Jahresbeginn eingetragen 78,00, Kurs Ende 2024 laut Export 88,00.
+  // Basisertrag 78,00 × 1,603 % = 1,25034 → 1,25. Mehrbetrag 10,00. Kürzung 1,25 × 3/12 = 0,3125 → 0,31. Je Anteil 0,94 → 28,20 €.
+  test('Beispieldaten 2025: Vorabpauschale nach Eingabe des Preises zu Jahresbeginn', function () {
+    const r = sample(2025, { IE0000002001: 'aktienfonds' }, { IE0000002001: { 2024: { beginn: '78,00' } } });
+    eq(lineCents(r, 'KAP-INV', 9), 2820, 'Zeile 9');
+    ok(!warning(r, /Vorabpauschale nicht berechnet/), 'nicht mehr offen');
+    const row = r.vorab.funds[0];
+    eq(row.exportEnde, 8800, 'Kurs Ende 2024 aus dem Export');
+    eq(row.exportBeginn, null, 'kein Kurs zu Jahresbeginn im Export');
   });
 
   // 2024: Dividende 7,50 USD × 0,91 = 6,83 €; einbehalten 1,03 €, Grenze 15 % von 6,83 = 1,02 €.
