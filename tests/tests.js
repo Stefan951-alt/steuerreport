@@ -194,6 +194,7 @@
   test('Doppelt geladene Datei zählt einmal', function () {
     eq(lineCents(run([fifoFiles[0], fifoFiles[1], fifoFiles[1]], 2025), 'KAP', 19), 59724);
   });
+
   // Kauf 1.000 + 1 = 1.001,00 €.  Verkauf 900 − 1 = 899,00 €.  Verlust 102,00 €.
   test('Aktienverlust: Zeile 23 positiv, Zeile 19 negativ', function () {
     const r = run([statement({ trades: [
@@ -413,6 +414,7 @@
     ok(warning(r, /Zeilennummern/, 'pruefen'), 'Prüfpunkt fehlt');
     ok(!warning(run([statement({})], 2025), /Zeilennummern/), 'für 2025 kein Prüfpunkt');
   });
+
   /* ---------- Beispieldaten von Anfang bis Ende ---------- */
 
   // ACME: Käufe 2.001 USD × 0,92 = 1.840,92 € (20 Stk.) und 1.201 USD × 0,93 = 1.116,93 € (10 Stk.); Split 2:1 → 40 + 20 Stk.
