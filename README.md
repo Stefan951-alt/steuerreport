@@ -70,6 +70,8 @@ Der Grundsatz: Was nicht sicher berechnet werden kann, steht als **offener Punkt
 
 ```
 index.html            Oberfläche
+impressum.html        Impressum
+datenschutz.html      Datenschutzhinweis
 tests.html            Tests des Rechenkerns, im Browser öffnen
 js/core/money.js      Rechnen in Cent, Formatierung
 js/core/flex.js       Einlesen des Flex-Query-XML
