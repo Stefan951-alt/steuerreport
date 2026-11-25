@@ -430,8 +430,8 @@
     if (fundDistributions.offen.length) pendingLines.push(line('', '?', 'Fondsausschüttungen, Fondsart noch offen', fundDistributions.offen));
     if (fundSales.offen.length) pendingLines.push(line('', '?', 'Gewinne und Verluste aus Fondsverkäufen, Fondsart noch offen', fundSales.offen));
 
-    const sections = [{ id: 'kap', title: 'Anlage KAP', lines: kapLines }];
-    if (invLines.length) sections.push({ id: 'kapinv', title: 'Anlage KAP-INV', lines: invLines, note: 'Beträge in voller Höhe eintragen. Die Teilfreistellung zieht das Finanzamt ab.' });
+    const sections = [{ id: 'kap', title: 'Anlage KAP', lines: kapLines, note: 'Im Vordruck stehen die Zeilen ' + kap.inland + ' bis ' + kap.aktienverluste + ' in vollen Euro, Zeile ' + kap.auslaendischeSteuern + ' mit Cent.' }];
+    if (invLines.length) sections.push({ id: 'kapinv', title: 'Anlage KAP-INV', lines: invLines, note: 'Beträge in voller Höhe eintragen, im Vordruck in vollen Euro. Die Teilfreistellung zieht das Finanzamt ab.' });
     if (pendingLines.length) sections.push({ id: 'offen', title: 'Berechnet, aber noch keiner Zeile zugeordnet', lines: pendingLines });
 
     /* --- Offene Punkte: Dinge, die in keiner Summe stecken --- */
