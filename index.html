@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Steuerreport für Auslandsdepots</title>
+<meta name="description" content="Rechnet aus dem Flex-Query-Export von Interactive Brokers die Werte für Anlage KAP und KAP-INV. Läuft vollständig im Browser.">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<div class="page">
+
+  <header class="masthead">
+    <p class="eyebrow">Interactive Brokers → Anlage KAP und KAP-INV</p>
+    <h1>Steuerreport für Auslandsdepots</h1>
+    <p class="lede">Lade deinen Flex-Query-Export. Du bekommst die Werte für die Formularzeilen und zu jeder Zahl die Buchungen, aus denen sie entsteht.</p>
+    <p class="privacy">Die Datei bleibt auf deinem Gerät. Es wird nichts hochgeladen.</p>
+  </header>
+
+  <main>
+    <section class="card" id="laden" aria-labelledby="h-laden">
+      <h2 id="h-laden">Export laden</h2>
+      <div id="drop" class="drop" tabindex="0" role="button" aria-label="XML-Dateien auswählen">
+        <p class="drop-main"><strong>XML-Dateien hierher ziehen</strong> oder <span class="linkish">auswählen</span></p>
+        <p class="muted">Eine Datei je Kalenderjahr, zurück bis zum ersten Kauf.</p>
+        <input id="file" type="file" accept=".xml,text/xml,application/xml" multiple hidden>
+      </div>
+      <div class="row">
+        <button id="sample" type="button" class="btn ghost">Beispieldaten laden</button>
+        <button id="clear" type="button" class="btn ghost" hidden>Alle Dateien entfernen</button>
+      </div>
+      <div id="errors" aria-live="polite"></div>
+      <ul id="files" class="files"></ul>
+
+      <details class="howto">
+        <summary>So erstellst du den Export bei Interactive Brokers</summary>
+        <ol>
+          <li>Im Client Portal unter „Performance &amp; Berichte“ die Flex-Queries öffnen und eine neue <strong>Activity Flex Query</strong> anlegen.</li>
+          <li>Diese Abschnitte auswählen, jeweils mit allen Feldern: <strong>Account Information</strong>, <strong>Trades</strong> (Option „Execution“), <strong>Cash Transactions</strong>, <strong>Corporate Actions</strong>, <strong>Open Positions</strong>, <strong>Financial Instrument Information</strong>.</li>
+          <li>Format <strong>XML</strong>, Datumsformat <strong>yyyyMMdd</strong>, Zeitformat <strong>HHmmss</strong>.</li>
+          <li>Die Query für jedes Kalenderjahr einzeln ausführen (ein Lauf deckt höchstens 365 Tage ab) und alle Dateien hier laden.</li>
+        </ol>
+        <p class="muted">Die Bezeichnungen im Portal können leicht abweichen. Voraussetzung ist ein Konto mit Basiswährung EUR.</p>
+      </details>
+    </section>
+
+    <div id="result"></div>
+  </main>
+
+  <footer class="foot">
+    <p><strong>Rechenhilfe, keine Steuerberatung.</strong> Prüfe die Werte, bevor du sie in deine Steuererklärung übernimmst. Sparer-Pauschbetrag, Verlustvorträge und Kirchensteuer berücksichtigt das Finanzamt, nicht dieses Werkzeug.</p>
+    <p class="muted">Berechnet werden Aktien, Fonds und ETFs, Dividenden, Zinsen und Quellensteuer. Alles andere erscheint als offener Punkt und in keiner Summe.</p>
+    <p class="muted">Freie Software unter AGPL-3.0. <a class="linkish" href="https://github.com/Stefan951-alt/steuerreport" rel="noopener">Quellcode auf GitHub</a> · <a class="linkish" href="https://github.com/Stefan951-alt/steuerreport/issues" rel="noopener">Fehler melden</a></p>
+  </footer>
+
+</div>
+
+<script src="js/core/money.js"></script>
+<script src="js/core/forms.js"></script>
+<script src="js/core/flex.js"></script>
+<script src="js/core/fifo.js"></script>
+<script src="js/core/report.js"></script>
+<script src="beispiele/beispiel.js"></script>
+<script src="js/ui/app.js"></script>
+</body>
+</html>
