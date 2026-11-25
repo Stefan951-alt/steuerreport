@@ -13,6 +13,18 @@
     return Number.isFinite(n) ? n : NaN;
   }
 
+  // Eingabe eines Euro-Betrags durch den Nutzer, etwa „88,50“, „1.234,56“ oder „88.5“. Ergebnis in Cent.
+  // null = leer, NaN = nicht eindeutig lesbar („1.234“ könnte 1234 oder 1,234 heißen).
+  function parseEuro(text) {
+    const s = String(text === null || text === undefined ? '' : text).replace(/[\s€]/g, '');
+    if (s === '') return null;
+    let normalized;
+    if (/^(\d+|\d{1,3}(\.\d{3})+),\d+$/.test(s)) normalized = s.replace(/\./g, '').replace(',', '.');
+    else if (/^\d+(\.\d{1,2})?$/.test(s)) normalized = s;
+    else return NaN;
+    return toCents(Number(normalized));
+  }
+
   // Kaufmännisch runden. Der kleine Zuschlag fängt Darstellungsfehler wie 1.005 * 100 = 100.4999… ab.
   function toCents(amount) {
     const sign = amount < 0 ? -1 : 1;
@@ -56,6 +68,7 @@
   K.money = {
     QTY_SCALE: QTY_SCALE,
     parseDec: parseDec,
+    parseEuro: parseEuro,
     toCents: toCents,
     toQty: toQty,
     fmtCents: fmtCents,
