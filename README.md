@@ -37,7 +37,7 @@ Voraussetzung ist ein Konto mit Basiswährung EUR.
 | Verkäufe und Ausschüttungen von Fonds und ETFs | Anlage KAP-INV, Zeile je nach Fondsart |
 | Aktiensplits | Anschaffungskosten werden auf die neue Stückzahl verteilt |
 
-Die Zeilennummern sind für das Steuerjahr 2025 hinterlegt (`js/core/forms.js`). Für andere Jahre zeigt der Bericht die Nummern von 2025 und weist darauf hin.
+Die Zeilennummern sind für das Steuerjahr 2025 hinterlegt (`js/core/forms.js`). Für andere Jahre zeigt der Bericht die Nummern von 2025 und weist darauf hin. Die Nummern für 2025 sind mit den amtlichen Vordrucken abgeglichen (Stand November 2026).
 
 ### Rechenregeln
 
