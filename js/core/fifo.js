@@ -9,6 +9,9 @@
     return String(codes || '').split(';').some(c => c.trim() === code);
   }
 
+  // Kürzel laut IBKR an Aktiengeschäften, die aus einer Option entstehen: A = Zuteilung, Ex/AEx/MEx = Ausübung.
+  const DELIVERY_CODES = ['A', 'Ex', 'AEx', 'MEx'];
+
   // Zahlungsfluss eines Geschäfts in Euro-Cent: negativ beim Kauf, positiv beim Verkauf, Gebühren und Steuern eingerechnet.
   function cashCents(trade, flags) {
     const feeCurrency = trade.commissionCurrency || trade.currency;
@@ -24,7 +27,9 @@
   }
 
   // events: Käufe, Verkäufe und Kapitalmaßnahmen EINES Wertpapiers in EINEM Depot, zeitlich sortiert.
-  function run(events) {
+  // adjust (optional): Geschäft → Cent, um die sich sein Zahlungsfluss ändert. Damit geht die Prämie einer ausgeübten Option
+  // in die Anschaffungskosten oder den Erlös des gelieferten Wertpapiers ein.
+  function run(events, adjust) {
     const lots = [];
     const realizations = [];
     const timeline = [];          // Mengenänderungen, die diese Rechnung nachvollzogen hat – Grundlage für den Bestandsabgleich
@@ -119,11 +124,13 @@
       }
       const q = M.toQty(ev.quantity);
       if (q === 0) return;
-      // Kürzel laut IBKR: Ca = storniert, Co = korrigiert; A = Zuteilung, Ex/AEx/MEx = Ausübung einer Option.
+      // Kürzel laut IBKR: Ca = storniert, Co = korrigiert.
       if (/\(Ca\.\)/.test(ev.buySell) || hasCode(ev.notes, 'Ca') || hasCode(ev.notes, 'Co') || /Cancel|Correct/i.test(ev.transactionType)) flags.cancellation = true;
-      if (['A', 'Ex', 'AEx', 'MEx'].some(code => hasCode(ev.notes, code))) flags.optionDelivery = true;
+      // Gemeldet wird nur, wenn sich das Optionsgeschäft dazu nicht zuordnen ließ.
+      const matched = !!adjust && adjust.has(ev);
+      if (!matched && DELIVERY_CODES.some(code => hasCode(ev.notes, code))) flags.optionDelivery = true;
       timeline.push({ date: ev.date, delta: q });
-      const cash = cashCents(ev, flags);
+      const cash = cashCents(ev, flags) + (matched ? adjust.get(ev) : 0);
       if (q > 0) buy(ev, q, -cash);
       else sell(ev, -q, cash);
     });
@@ -135,5 +142,5 @@
     return timeline.reduce((s, e) => (e.date <= isoDate ? s + e.delta : s), 0);
   }
 
-  K.fifo = { run: run, positionAt: positionAt, compareEvents: compareEvents };
+  K.fifo = { run: run, positionAt: positionAt, compareEvents: compareEvents, cashCents: cashCents, hasCode: hasCode, DELIVERY_CODES: DELIVERY_CODES };
 })(typeof window !== 'undefined' ? window : globalThis);
